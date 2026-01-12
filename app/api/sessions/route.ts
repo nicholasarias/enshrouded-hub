@@ -1,9 +1,9 @@
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
-
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { requireWriteAccess } from "@/lib/requireWriteAccess";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type Session = {
   id: string;
@@ -46,55 +46,56 @@ function isRateLimited(req: Request) {
   return entry.count > RATE_LIMIT_MAX;
 }
 
-// ===== Validation helpers =====
-function sanitizeString(value: unknown, maxLen: number) {
-  const s = String(value ?? "").trim();
-  return s.length > maxLen ? s.slice(0, maxLen) : s;
+// ===== Helpers =====
+function validateGuildId(input: any): string | null {
+  const s = String(input || "").trim();
+  if (!/^\d{10,25}$/.test(s)) return null;
+  return s;
 }
 
-function parsePositiveInt(value: unknown, fallback: number, max: number) {
-  const n = Number(value);
+function sanitizeString(input: any, maxLen: number): string {
+  const s = typeof input === "string" ? input : input == null ? "" : String(input);
+  return s.trim().slice(0, maxLen);
+}
+
+function parsePositiveInt(input: any, fallback: number, max: number): number {
+  const n = Number.parseInt(String(input ?? ""), 10);
   if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.min(Math.floor(n), max);
+  return Math.min(n, max);
 }
 
-function validateGuildId(guildId: unknown) {
-  const s = String(guildId ?? "");
-  return /^\d{15,25}$/.test(s) ? s : "";
-}
-
-// ===== Supabase helpers =====
-async function getChannelIdForGuild(guildId: string) {
+async function getChannelIdForGuild(guildId: string): Promise<string> {
   const { data, error } = await supabaseAdmin
     .from("discord_servers")
     .select("channel_id")
     .eq("guild_id", guildId)
     .single();
 
-  if (error) throw new Error(`Supabase lookup failed: ${error.message}`);
-  if (!data?.channel_id) throw new Error("No channel saved for this server. Run /setup first.");
-
-  return data.channel_id as string;
+  if (error) throw new Error("No Discord channel configured. Run /setup first.");
+  const channelId = String((data as any)?.channel_id || "").trim();
+  if (!channelId) throw new Error("No Discord channel configured. Run /setup first.");
+  return channelId;
 }
-function toUnixSeconds(dateIsoOrText: string) {
-  const ms = Date.parse(dateIsoOrText);
+
+function toUnixSeconds(startLocal: string): number | null {
+  const ms = Date.parse(startLocal);
   if (!Number.isFinite(ms)) return null;
   return Math.floor(ms / 1000);
 }
 
-function discordTimeTag(unix: number, style: "F" | "R") {
+function discordTimeTag(unix: number, style: "t" | "T" | "d" | "D" | "f" | "F" | "R") {
   return `<t:${unix}:${style}>`;
 }
 
-
+// ===== Routes =====
 export async function POST(req: Request) {
-  // 1) API key check (lockdown)
-  const key = req.headers.get("x-api-key");
-  if (!process.env.SESSIONS_API_KEY || key !== process.env.SESSIONS_API_KEY) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Auth gate: valid API key OR logged-in officer
+  const gate = await requireWriteAccess(req);
+  if (!gate.ok) {
+    return NextResponse.json({ error: gate.error }, { status: gate.status });
   }
 
-  // 2) Rate limit
+  // Rate limit
   if (isRateLimited(req)) {
     return NextResponse.json(
       { error: "Rate limit exceeded. Try again in a minute." },
@@ -103,7 +104,6 @@ export async function POST(req: Request) {
   }
 
   try {
-    // 3) Parse + validate input
     const body = (await req.json()) as any;
 
     const guildId = validateGuildId(body?.guildId);
@@ -123,7 +123,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 4) Resolve Discord channel from Supabase mapping
+    // Resolve Discord channel from Supabase mapping
     let channelId: string;
     try {
       channelId = await getChannelIdForGuild(guildId);
@@ -134,7 +134,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // 5) Build session
     const session: Session = {
       id: crypto.randomUUID(),
       title,
@@ -144,7 +143,7 @@ export async function POST(req: Request) {
       createdAt: new Date().toISOString(),
     };
 
-    // 6) Insert into Supabase
+    // Insert into Supabase
     const { data: inserted, error: insertError } = await supabaseAdmin
       .from("sessions")
       .insert({
@@ -163,102 +162,107 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Failed to save session" }, { status: 500 });
     }
 
+    // Post to Discord (best-effort)
     const botToken = process.env.DISCORD_BOT_TOKEN;
 
-if (botToken) {
-  try {
-    const discordRes = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bot ${botToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          embeds: [
-            {
-              title: `New Session: ${session.title}`,
-              color: 0x2dd4bf,
-              description: session.notes || "No notes.",
-              timestamp: new Date().toISOString(),
-              fields: [
-  {
-    name: "🕒 When",
-    value: (() => {
-      const unix = toUnixSeconds(session.startLocal);
-      return unix
-        ? `${discordTimeTag(unix, "F")} (${discordTimeTag(unix, "R")})`
-        : session.startLocal;
-    })(),
-    inline: false,
-  },
-  {
-    name: "⏱ Duration",
-    value: `${session.durationMinutes} minutes`,
-    inline: true,
-  },
-  {
-    name: "📊 RSVPs",
-    value: "**In:** 0  |  **Maybe:** 0  |  **Out:** 0",
-    inline: false,
-  },
-],
-
-              footer: { text: "Click a button to RSVP" },
+    if (botToken) {
+      try {
+        const discordRes = await fetch(
+          `https://discord.com/api/v10/channels/${channelId}/messages`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bot ${botToken}`,
+              "Content-Type": "application/json",
             },
-          ],
-          components: [
-            {
-              type: 1,
-              components: [
-                { type: 2, style: 3, label: "In (0)", custom_id: `rsvp:${session.id}:in` },
-                { type: 2, style: 1, label: "Maybe (0)", custom_id: `rsvp:${session.id}:maybe` },
-                { type: 2, style: 4, label: "Out (0)", custom_id: `rsvp:${session.id}:out` },
+            body: JSON.stringify({
+              embeds: [
+                {
+                  title: `New Session: ${session.title}`,
+                  color: 0x2dd4bf,
+                  description: session.notes || "No notes.",
+                  timestamp: new Date().toISOString(),
+                  fields: [
+                    {
+                      name: "🕒 When",
+                      value: (() => {
+                        const unix = toUnixSeconds(session.startLocal);
+                        return unix
+                          ? `${discordTimeTag(unix, "F")} (${discordTimeTag(unix, "R")})`
+                          : session.startLocal;
+                      })(),
+                      inline: false,
+                    },
+                    {
+                      name: "⏱ Duration",
+                      value: `${session.durationMinutes} minutes`,
+                      inline: true,
+                    },
+                    {
+                      name: "📊 RSVPs",
+                      value: "**In:** 0  |  **Maybe:** 0  |  **Out:** 0",
+                      inline: false,
+                    },
+                  ],
+                  footer: { text: "Click a button to RSVP" },
+                },
               ],
-            },
-          ],
-        }),
+              components: [
+                {
+                  type: 1,
+                  components: [
+                    { type: 2, style: 3, label: "In (0)", custom_id: `rsvp:${session.id}:in` },
+                    {
+                      type: 2,
+                      style: 1,
+                      label: "Maybe (0)",
+                      custom_id: `rsvp:${session.id}:maybe`,
+                    },
+                    { type: 2, style: 4, label: "Out (0)", custom_id: `rsvp:${session.id}:out` },
+                  ],
+                },
+              ],
+            }),
+          }
+        );
+
+        if (!discordRes.ok) {
+          const text = await discordRes.text();
+
+          await supabaseAdmin
+            .from("sessions")
+            .update({
+              discord_post_status: "failed",
+              discord_post_error: `HTTP ${discordRes.status}: ${text}`,
+            })
+            .eq("id", session.id);
+
+          console.error("Discord post failed:", discordRes.status, text);
+        } else {
+          const message = await discordRes.json();
+
+          await supabaseAdmin
+            .from("sessions")
+            .update({
+              discord_channel_id: channelId,
+              discord_message_id: message.id,
+              discord_post_status: "posted",
+              discord_post_error: null,
+            })
+            .eq("id", session.id);
+        }
+      } catch (e: any) {
+        await supabaseAdmin
+          .from("sessions")
+          .update({
+            discord_post_status: "failed",
+            discord_post_error: e?.message || "Unknown error",
+          })
+          .eq("id", session.id);
+
+        console.error("Discord post exception:", e);
       }
-    );
-
-    if (!discordRes.ok) {
-      const text = await discordRes.text();
-
-      await supabaseAdmin
-        .from("sessions")
-        .update({
-          discord_post_status: "failed",
-          discord_post_error: `HTTP ${discordRes.status}: ${text}`,
-        })
-        .eq("id", session.id);
-
-      console.error("Discord post failed:", discordRes.status, text);
-    } else {
-      const message = await discordRes.json();
-
-      await supabaseAdmin
-        .from("sessions")
-        .update({
-          discord_channel_id: channelId,
-          discord_message_id: message.id,
-          discord_post_status: "posted",
-          discord_post_error: null,
-        })
-        .eq("id", session.id);
     }
-  } catch (e: any) {
-    await supabaseAdmin
-      .from("sessions")
-      .update({
-        discord_post_status: "failed",
-        discord_post_error: e?.message || "Unknown error",
-      })
-      .eq("id", session.id);
-
-    console.error("Discord post exception:", e);
-  }
-}
 
     return NextResponse.json({ session: inserted }, { status: 201 });
   } catch (err) {

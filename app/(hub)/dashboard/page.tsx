@@ -1,15 +1,51 @@
 "use client";
 
+import SyncRolesButton from "../../components/SyncRolesButton";
+import OfficerOnly from "../../components/OfficerOnly";
+
 import Link from "next/link";
 
 export default function DashboardPage() {
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="rounded-2xl border border-white/10 bg-black/35 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
-        <div className="text-xs uppercase tracking-[0.25em] text-emerald-300/80">
-          Dashboard
-        </div>
+<div className="rounded-2xl border border-white/10 bg-black/35 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+  <div className="flex items-center justify-between">
+    <div className="text-xs uppercase tracking-[0.25em] text-emerald-300/80">
+      Dashboard
+    </div>
+
+    <SyncRolesButton />
+  </div>
+
+        <OfficerOnly>
+  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+    <div className="text-sm font-semibold text-emerald-200">
+      Officer tools
+    </div>
+
+    <div className="mt-3 flex flex-wrap gap-2">
+      <a
+        href="/schedule"
+        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:border-white/20"
+      >
+        Create session
+      </a>
+
+      <a
+        href="/map"
+        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-zinc-200 hover:border-white/20"
+      >
+        Edit map
+      </a>
+    </div>
+
+    <div className="mt-2 text-xs text-zinc-400">
+      Visible only to officers or the server owner.
+    </div>
+  </div>
+</OfficerOnly>
+
         <div className="mt-1 text-2xl font-bold tracking-wide">
           Flameborn Command Console
         </div>

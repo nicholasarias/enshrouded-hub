@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import OfficerOnly from "../../components/OfficerOnly";
 
 type Session = {
   id: string;
@@ -59,7 +60,6 @@ function Chip({ label, tone }: { label: string; tone: "in" | "maybe" | "out" }) 
 
 export default function SchedulePage() {
   const guildId = process.env.NEXT_PUBLIC_DISCORD_GUILD_ID || "";
-  const apiKey = process.env.NEXT_PUBLIC_SESSIONS_API_KEY || "";
 
   const [loading, setLoading] = useState(true);
   const [posting, setPosting] = useState(false);
@@ -78,12 +78,11 @@ export default function SchedulePage() {
   const canPost = useMemo(() => {
     return (
       !!guildId &&
-      !!apiKey &&
       form.title.trim().length > 0 &&
       form.startLocal.trim().length > 0 &&
       safeNumber(form.durationMinutes, 0) > 0
     );
-  }, [guildId, apiKey, form]);
+  }, [guildId, form]);
 
   async function loadAll() {
     try {
@@ -113,9 +112,10 @@ export default function SchedulePage() {
         return;
       }
 
-      const cRes = await fetch(`/api/rsvps?guildId=${encodeURIComponent(guildId)}&sessionIds=${encodeURIComponent(ids.join(","))}`, {
-        cache: "no-store",
-      });
+      const cRes = await fetch(
+        `/api/rsvps?guildId=${encodeURIComponent(guildId)}&sessionIds=${encodeURIComponent(ids.join(","))}`,
+        { cache: "no-store" }
+      );
 
       if (!cRes.ok) {
         setRsvpCounts({});
@@ -172,7 +172,6 @@ export default function SchedulePage() {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-api-key": apiKey,
         },
         body: JSON.stringify(payload),
       });
@@ -197,12 +196,8 @@ export default function SchedulePage() {
       <div className="rounded-2xl border border-white/10 bg-black/35 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
-            <div className="text-xs uppercase tracking-[0.25em] text-emerald-300/80">
-              Schedule
-            </div>
-            <div className="mt-1 text-2xl font-bold tracking-wide">
-              Rally the Flameborn
-            </div>
+            <div className="text-xs uppercase tracking-[0.25em] text-emerald-300/80">Schedule</div>
+            <div className="mt-1 text-2xl font-bold tracking-wide">Rally the Flameborn</div>
             <div className="mt-2 max-w-2xl text-sm text-zinc-400">
               Create a session, auto post to Discord, and track RSVPs live.
             </div>
@@ -213,7 +208,7 @@ export default function SchedulePage() {
               Guild: {guildId ? "Linked" : "Missing"}
             </span>
             <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300">
-              API Key: {apiKey ? "Set" : "Missing"}
+              Auth: Required
             </span>
           </div>
         </div>
@@ -225,93 +220,93 @@ export default function SchedulePage() {
         ) : null}
       </div>
 
-      {/* Create */}
+      {/* Create + List */}
       <div className="grid gap-4 lg:grid-cols-5">
-        <div className="lg:col-span-2 rounded-2xl border border-white/10 bg-black/35 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold tracking-wide">Create Session</div>
-            <span className="text-xs text-zinc-500">Posts to Discord</span>
-          </div>
-
-          <div className="mt-4 space-y-3">
-            <div>
-              <label className="text-xs font-semibold text-zinc-300">Title</label>
-              <input
-                value={form.title}
-                onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
-                maxLength={120}
-                className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
-                placeholder="Boss run, farming, base build"
-              />
+        <OfficerOnly>
+          <div className="lg:col-span-2 rounded-2xl border border-white/10 bg-black/35 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold tracking-wide">Create Session</div>
+              <span className="text-xs text-zinc-500">Posts to Discord</span>
             </div>
 
-            <div>
-              <label className="text-xs font-semibold text-zinc-300">Start</label>
-              <input
-                type="datetime-local"
-                value={form.startLocal}
-                onChange={(e) => setForm((p) => ({ ...p, startLocal: e.target.value }))}
-                className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
-              />
-              <div className="mt-1 text-[11px] text-zinc-500">
-                Stored as ISO string and shown in your local time.
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
+            <div className="mt-4 space-y-3">
               <div>
-                <label className="text-xs font-semibold text-zinc-300">Duration</label>
+                <label className="text-xs font-semibold text-zinc-300">Title</label>
                 <input
-                  type="number"
-                  value={form.durationMinutes}
-                  onChange={(e) => setForm((p) => ({ ...p, durationMinutes: safeNumber(e.target.value, 90) }))}
-                  min={15}
-                  max={360}
+                  value={form.title}
+                  onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
+                  maxLength={120}
                   className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
+                  placeholder="Boss run, farming, base build"
                 />
               </div>
 
-              <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-                <div className="text-xs text-zinc-400">Preview</div>
-                <div className="mt-1 text-sm font-semibold text-zinc-100">
-                  {form.startLocal ? formatWhen(new Date(form.startLocal).toISOString()) : "Pick a time"}
+              <div>
+                <label className="text-xs font-semibold text-zinc-300">Start</label>
+                <input
+                  type="datetime-local"
+                  value={form.startLocal}
+                  onChange={(e) => setForm((p) => ({ ...p, startLocal: e.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
+                />
+                <div className="mt-1 text-[11px] text-zinc-500">Stored as ISO string and shown in your local time.</div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-zinc-300">Duration</label>
+                  <input
+                    type="number"
+                    value={form.durationMinutes}
+                    onChange={(e) => setForm((p) => ({ ...p, durationMinutes: safeNumber(e.target.value, 90) }))}
+                    min={15}
+                    max={360}
+                    className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
+                  />
                 </div>
-                <div className="mt-1 text-xs text-zinc-400">
-                  {minutesToLabel(form.durationMinutes)}
+
+                <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+                  <div className="text-xs text-zinc-400">Preview</div>
+                  <div className="mt-1 text-sm font-semibold text-zinc-100">
+                    {form.startLocal ? formatWhen(new Date(form.startLocal).toISOString()) : "Pick a time"}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-400">{minutesToLabel(form.durationMinutes)}</div>
                 </div>
               </div>
-            </div>
 
-            <div>
-              <label className="text-xs font-semibold text-zinc-300">Notes</label>
-              <textarea
-                value={form.notes}
-                onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
-                maxLength={1500}
-                rows={4}
-                className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
-                placeholder="Bring mats, set waypoint, gear requirements, etc."
-              />
-            </div>
+              <div>
+                <label className="text-xs font-semibold text-zinc-300">Notes</label>
+                <textarea
+                  value={form.notes}
+                  onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
+                  maxLength={1500}
+                  rows={4}
+                  className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
+                  placeholder="Bring mats, set waypoint, gear requirements, etc."
+                />
+              </div>
 
-            <button
-              onClick={createSession}
-              disabled={!canPost || posting}
-              className="w-full rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-2.5 text-sm font-semibold text-emerald-100 transition hover:border-emerald-400/40 hover:bg-emerald-400/15 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {posting ? "Posting to Discord…" : "Create and Post"}
-            </button>
+              <button
+                onClick={createSession}
+                disabled={!canPost || posting}
+                className="w-full rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-2.5 text-sm font-semibold text-emerald-100 transition hover:border-emerald-400/40 hover:bg-emerald-400/15 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {posting ? "Posting to Discord…" : "Create and Post"}
+              </button>
+
+              <div className="text-[11px] text-zinc-500">
+                Officers only. If this fails, make sure you are logged in and have officer permissions.
+              </div>
+            </div>
           </div>
-        </div>
+        </OfficerOnly>
 
         {/* List */}
         <div className="lg:col-span-3 rounded-2xl border border-white/10 bg-black/35 p-5 shadow-[0_20px_60px_rgba(0,0,0,0.35)]">
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div>
               <div className="text-sm font-semibold tracking-wide">Upcoming Sessions</div>
-              <div className="text-xs text-zinc-500">
-                Auto refresh every 5 seconds
-              </div>
+              <div className="text-xs text-zinc-500">Auto refresh every 5 seconds</div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -329,9 +324,7 @@ export default function SchedulePage() {
             ) : sessions.length === 0 ? (
               <div className="rounded-xl border border-white/10 bg-black/25 px-4 py-10 text-center">
                 <div className="text-sm font-semibold text-zinc-200">No sessions yet</div>
-                <div className="mt-1 text-sm text-zinc-400">
-                  Create one on the left and it will post to Discord.
-                </div>
+                <div className="mt-1 text-sm text-zinc-400">Create one and it will post to Discord.</div>
               </div>
             ) : (
               <div className="space-y-3">
@@ -348,9 +341,7 @@ export default function SchedulePage() {
                           <div className="flex items-start gap-3">
                             <div className="mt-1 h-9 w-9 flex-none rounded-xl border border-emerald-400/20 bg-emerald-400/10" />
                             <div className="min-w-0">
-                              <div className="truncate text-base font-bold tracking-wide">
-                                {s.title}
-                              </div>
+                              <div className="truncate text-base font-bold tracking-wide">{s.title}</div>
                               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
                                 <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">
                                   {formatWhen(String(s.start_local || ""))}
@@ -384,9 +375,7 @@ export default function SchedulePage() {
                           <span className="inline-block h-2 w-2 rounded-full bg-emerald-400/25" />
                           Live updates are reflected in Discord and here.
                         </div>
-                        <div className="text-zinc-600">
-                          RSVP by clicking buttons in Discord.
-                        </div>
+                        <div className="text-zinc-600">RSVP by clicking buttons in Discord.</div>
                       </div>
                     </div>
                   );
@@ -396,8 +385,8 @@ export default function SchedulePage() {
           </div>
 
           <div className="mt-4 text-[11px] text-zinc-500">
-            Note: this page expects an RSVP counts endpoint at <span className="text-zinc-300">/api/rsvps</span>.
-            If your counts are already being fetched differently, tell me the current route shape and I will wire it in.
+            Note: this page expects an RSVP counts endpoint at <span className="text-zinc-300">/api/rsvps</span>. If your counts are
+            already being fetched differently, tell me the current route shape and I will wire it in.
           </div>
         </div>
       </div>
