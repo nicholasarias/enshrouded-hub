@@ -9,6 +9,30 @@ function isSnowflake(id: string) {
   return /^\d{10,25}$/.test(id);
 }
 
+/**
+ * Tries common places devs store the Discord user id in NextAuth session.
+ * If you already mapped it in callbacks, one of these will hit.
+ */
+function pickDiscordUserId(session: any): string | null {
+  const user = session?.user;
+  if (!user) return null;
+
+  const candidates = [
+    user.discord_user_id,
+    user.discordUserId,
+    user.discordId,
+    user.providerAccountId,
+    session.discordUserId,
+    session.providerAccountId,
+  ];
+
+  for (const c of candidates) {
+    const v = String(c || "").trim();
+    if (isSnowflake(v)) return v;
+  }
+  return null;
+}
+
 async function discordAddRole(params: {
   botToken: string;
   guildId: string;
@@ -59,35 +83,47 @@ async function discordRemoveRole(params: {
   }
 }
 
-/**
- * POST /api/me/select-role
- * Body: { guildId: string, roleId: string }
- *
- * Saves hub selection and (optionally) syncs to Discord roles.
- * Also stores discord_user_id into user_hub_roles for RSVP badges later.
- */
-export async function POST(req: Request) {
+async function handleSelect(params: { guildId: string; roleId: string }) {
   const session = await auth();
-  if (!session) {
+
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const appUserId = (session as any).userId as string | undefined;
-  if (!appUserId) {
-    return NextResponse.json({ error: "Missing user id" }, { status: 400 });
+  const discordUserId = pickDiscordUserId(session);
+  if (!discordUserId) {
+    return NextResponse.json(
+      { error: "Unauthorized: missing discord user id in session" },
+      { status: 401 }
+    );
   }
 
-  const discordUserId = (session as any).discordUserId as string | undefined;
+  // Resolve our internal user id (profiles.id uuid) from discord_user_id
+  const { data: prof, error: profErr } = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("discord_user_id", discordUserId)
+    .maybeSingle();
 
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  if (profErr) {
+    console.error("profiles lookup failed:", profErr);
+    return NextResponse.json(
+      { error: "Failed to resolve user profile" },
+      { status: 500 }
+    );
   }
 
-  const guildId = String((body as any)?.guildId || "").trim();
-  const roleId = String((body as any)?.roleId || "").trim();
+  if (!prof?.id) {
+    return NextResponse.json(
+      { error: "Profile not found. Try signing out and signing in again." },
+      { status: 404 }
+    );
+  }
+
+  const userId = String(prof.id);
+
+  const guildId = String(params.guildId || "").trim();
+  const roleId = String(params.roleId || "").trim();
 
   if (!guildId || !isSnowflake(guildId)) {
     return NextResponse.json({ error: "Missing or invalid guildId" }, { status: 400 });
@@ -118,7 +154,7 @@ export async function POST(req: Request) {
   // Load meta (combat vs logistics)
   const { data: meta, error: metaErr } = await supabaseAdmin
     .from("guild_role_meta")
-    .select("role_kind, group_key, display_name, description")
+    .select("role_kind, group_key, display_name, description, enabled")
     .eq("guild_id", guildId)
     .eq("role_id", roleId)
     .maybeSingle();
@@ -133,24 +169,56 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
+  if ((meta as any).enabled !== true) {
+    return NextResponse.json({ error: "This role is disabled in the hub." }, { status: 400 });
+  }
 
   const roleKind = String((meta as any).role_kind || "").trim();
   if (roleKind !== "combat" && roleKind !== "logistics") {
     return NextResponse.json({ error: "Invalid role kind configuration" }, { status: 500 });
   }
+  // ===== Server-side gating: logistics requires combat first =====
+if (roleKind === "logistics") {
+  const { data: combatSel, error: combatSelErr } = await supabaseAdmin
+    .from("user_hub_roles")
+    .select("role_id")
+    .eq("user_id", userId)
+    .eq("guild_id", guildId)
+    .eq("role_kind", "combat")
+    .maybeSingle();
+
+  if (combatSelErr) {
+    console.error("combat selection check failed:", combatSelErr);
+    return NextResponse.json(
+      { error: "Failed to validate combat selection" },
+      { status: 500 }
+    );
+  }
+
+  if (!combatSel?.role_id) {
+    return NextResponse.json(
+      { error: "Choose a combat role first to unlock logistics." },
+      { status: 400 }
+    );
+  }
+}
+
 
   // Existing selection (for Discord removal)
   const { data: existingSel, error: existingSelErr } = await supabaseAdmin
     .from("user_hub_roles")
-    .select("role_id")
-    .eq("user_id", appUserId)
+    .select("role_id, discord_user_id")
+    .eq("user_id", userId)
     .eq("guild_id", guildId)
     .eq("role_kind", roleKind)
     .maybeSingle();
 
   if (existingSelErr) {
     console.error("user_hub_roles existing select failed:", existingSelErr);
-    return NextResponse.json({ error: "Failed to load existing selection" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to load existing selection" },
+      { status: 500 }
+    );
   }
 
   const previousRoleId = existingSel?.role_id ? String(existingSel.role_id) : null;
@@ -159,25 +227,30 @@ export async function POST(req: Request) {
   const { error: delErr } = await supabaseAdmin
     .from("user_hub_roles")
     .delete()
-    .eq("user_id", appUserId)
+    .eq("user_id", userId)
     .eq("guild_id", guildId)
     .eq("role_kind", roleKind);
 
   if (delErr) {
     console.error("user_hub_roles delete failed:", delErr);
-    return NextResponse.json({ error: "Failed to replace previous selection" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to replace previous selection" },
+      { status: 500 }
+    );
   }
+
+  const insertPayload: any = {
+    user_id: userId,
+    guild_id: guildId,
+    role_id: roleId,
+    role_kind: roleKind,
+    selected_at: new Date().toISOString(),
+    discord_user_id: discordUserId, // ✅ FIX: persist discord user id for RSVP badge joins
+  };
 
   const { data: inserted, error: insErr } = await supabaseAdmin
     .from("user_hub_roles")
-    .insert({
-      user_id: appUserId,
-      discord_user_id: discordUserId || null, // ✅ key part for RSVP badges later
-      guild_id: guildId,
-      role_id: roleId,
-      role_kind: roleKind,
-      selected_at: new Date().toISOString(),
-    })
+    .insert(insertPayload)
     .select("*")
     .single();
 
@@ -186,15 +259,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Failed to save selection" }, { status: 500 });
   }
 
-  // Discord sync (optional)
+  // Backfill any older rows for this user that are missing discord_user_id (defensive)
+  await supabaseAdmin
+    .from("user_hub_roles")
+    .update({ discord_user_id: discordUserId })
+    .eq("guild_id", guildId)
+    .eq("user_id", userId)
+    .is("discord_user_id", null);
+
+  // Discord sync (optional / best-effort)
   const botToken = process.env.DISCORD_BOT_TOKEN || "";
   let discordSyncOk = false;
   let discordSyncWarning: string | null = null;
 
   if (!botToken) {
-    discordSyncWarning = "DISCORD_BOT_TOKEN missing. Hub selection saved but Discord was not updated.";
-  } else if (!discordUserId) {
-    discordSyncWarning = "discordUserId missing in session. Hub selection saved but Discord was not updated.";
+    discordSyncWarning =
+      "DISCORD_BOT_TOKEN missing. Hub selection saved but Discord was not updated.";
   } else {
     try {
       if (previousRoleId && previousRoleId !== roleId) {
@@ -230,4 +310,22 @@ export async function POST(req: Request) {
     },
     { status: 200 }
   );
+}
+
+/**
+ * POST /api/me/select-role
+ * Body: { guildId: string, roleId: string }
+ */
+export async function POST(req: Request) {
+  let body: any = null;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  const guildId = String(body?.guildId || "").trim();
+  const roleId = String(body?.roleId || "").trim();
+
+  return handleSelect({ guildId, roleId });
 }

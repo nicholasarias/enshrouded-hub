@@ -5,6 +5,9 @@ import { auth } from "@/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireOfficer } from "@/lib/requireOfficer";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type DiscordRole = {
   id: string;
   name: string;
@@ -26,61 +29,116 @@ function isSnowflake(id: string) {
   return /^\d{10,25}$/.test(id);
 }
 
+function pickGuildId() {
+  // Prefer server-only env var, but allow fallback until you migrate
+  return String(
+    process.env.DISCORD_GUILD_ID || process.env.NEXT_PUBLIC_DISCORD_GUILD_ID || ""
+  ).trim();
+}
+
+function pickDiscordUserId(session: any): string | null {
+  const user = session?.user;
+
+  const candidates = [
+    user?.discord_user_id,
+    user?.discordUserId,
+    user?.discordId,
+    user?.providerAccountId,
+    session?.discordUserId,
+    session?.providerAccountId,
+  ];
+
+  for (const c of candidates) {
+    const v = String(c || "").trim();
+    if (isSnowflake(v)) return v;
+  }
+  return null;
+}
+
 export async function POST() {
-  // 1) Officer-only gate (server authoritative)
-  const gate = await requireOfficer();
-  if (!gate.ok) {
-    return NextResponse.json({ error: gate.error }, { status: gate.status });
+  // 1) Officer gate
+  const gate: any = await requireOfficer();
+  if (!gate?.ok) {
+    return NextResponse.json(
+      { ok: false, error: gate?.error || "Denied" },
+      { status: Number(gate?.status) || 401 }
+    );
   }
 
-  // 2) We still use the user session to know which profiles.id to sync into
+  // 2) We only need Discord user id from session
   const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!session) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const userId = session.user.id; // profiles.id (uuid)
-  const discordUserId = (session as any).discordUserId as string | null;
-
-  if (!discordUserId || !isSnowflake(discordUserId)) {
-    return NextResponse.json({ error: "Missing discord user id" }, { status: 400 });
+  const discordUserId = pickDiscordUserId(session);
+  if (!discordUserId) {
+    return NextResponse.json({ ok: false, error: "Missing discord user id" }, { status: 400 });
   }
 
-  // 3) Server-only env vars (no NEXT_PUBLIC here)
-  const guildId = process.env.DISCORD_GUILD_ID || "";
+  // 3) Look up internal profile id (uuid) from profiles table
+  const prof = await supabaseAdmin
+    .from("profiles")
+    .select("id")
+    .eq("discord_user_id", discordUserId)
+    .maybeSingle();
+
+  if (prof.error) {
+    console.error("profiles lookup failed:", prof.error);
+    return NextResponse.json({ ok: false, error: "Failed to look up profile" }, { status: 500 });
+  }
+
+  if (!prof.data?.id) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Profile not found for this Discord user. (profiles.discord_user_id must be set for your account.)",
+      },
+      { status: 404 }
+    );
+  }
+
+  const userId = String(prof.data.id);
+
+  // 4) Env vars
+  const guildId = pickGuildId();
   if (!guildId || !isSnowflake(guildId)) {
-    return NextResponse.json({ error: "Missing or invalid DISCORD_GUILD_ID" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: "Missing or invalid DISCORD_GUILD_ID (or NEXT_PUBLIC_DISCORD_GUILD_ID fallback)" },
+      { status: 500 }
+    );
   }
 
-  const botToken = process.env.DISCORD_BOT_TOKEN || "";
+  const botToken = String(process.env.DISCORD_BOT_TOKEN || "").trim();
   if (!botToken) {
-    return NextResponse.json({ error: "Missing DISCORD_BOT_TOKEN" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Missing DISCORD_BOT_TOKEN" }, { status: 500 });
   }
 
-  // 4) Fetch guild (owner id)
+  // 5) Fetch guild (owner id)
   const guildRes = await fetch(`https://discord.com/api/v10/guilds/${guildId}`, {
     headers: { Authorization: `Bot ${botToken}` },
   });
 
   if (!guildRes.ok) {
-    const text = await guildRes.text();
+    const text = await guildRes.text().catch(() => "");
     return NextResponse.json(
-      { error: `Discord guild fetch failed: HTTP ${guildRes.status}: ${text}` },
+      { ok: false, error: `Discord guild fetch failed: HTTP ${guildRes.status}: ${text}` },
       { status: 502 }
     );
   }
 
   const guild = (await guildRes.json()) as DiscordGuild;
 
-  // 5) Fetch roles catalog
+  // 6) Fetch roles catalog
   const rolesRes = await fetch(`https://discord.com/api/v10/guilds/${guildId}/roles`, {
     headers: { Authorization: `Bot ${botToken}` },
   });
 
   if (!rolesRes.ok) {
-    const text = await rolesRes.text();
+    const text = await rolesRes.text().catch(() => "");
     return NextResponse.json(
-      { error: `Discord roles fetch failed: HTTP ${rolesRes.status}: ${text}` },
+      { ok: false, error: `Discord roles fetch failed: HTTP ${rolesRes.status}: ${text}` },
       { status: 502 }
     );
   }
@@ -91,7 +149,7 @@ export async function POST() {
   const meaningfulRoles = roles.filter((r) => r.id !== guildId);
   const rolesEnabled = meaningfulRoles.length > 0;
 
-  // 6) Upsert roles catalog into Supabase
+  // 7) Upsert roles catalog into Supabase
   const rolesRows = roles.map((r) => ({
     guild_id: guildId,
     role_id: r.id,
@@ -108,27 +166,27 @@ export async function POST() {
 
   if (upsertRolesError) {
     console.error("Upsert discord_guild_roles failed:", upsertRolesError);
-    return NextResponse.json({ error: "Failed to upsert roles catalog" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Failed to upsert roles catalog" }, { status: 500 });
   }
 
-  // 7) Fetch THIS user’s guild member roles
+  // 8) Fetch THIS user’s guild member roles
   const memberRes = await fetch(
     `https://discord.com/api/v10/guilds/${guildId}/members/${discordUserId}`,
     { headers: { Authorization: `Bot ${botToken}` } }
   );
 
   if (!memberRes.ok) {
-    const text = await memberRes.text();
+    const text = await memberRes.text().catch(() => "");
     return NextResponse.json(
-      { error: `Discord member fetch failed: HTTP ${memberRes.status}: ${text}` },
+      { ok: false, error: `Discord member fetch failed: HTTP ${memberRes.status}: ${text}` },
       { status: 502 }
     );
   }
 
   const member = (await memberRes.json()) as DiscordGuildMember;
-  const memberRoleIds = Array.isArray(member.roles) ? member.roles : [];
+  const memberRoleIds = Array.isArray(member?.roles) ? member.roles : [];
 
-  // 8) Replace user roles rows for this guild (delete then insert)
+  // 9) Replace user roles rows for this guild (delete then insert)
   const { error: deleteError } = await supabaseAdmin
     .from("user_guild_roles")
     .delete()
@@ -137,7 +195,7 @@ export async function POST() {
 
   if (deleteError) {
     console.error("Delete user_guild_roles failed:", deleteError);
-    return NextResponse.json({ error: "Failed to clear existing user roles" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Failed to clear existing user roles" }, { status: 500 });
   }
 
   const userRoleRows = memberRoleIds.map((roleId) => ({
@@ -151,11 +209,11 @@ export async function POST() {
     const { error: insertError } = await supabaseAdmin.from("user_guild_roles").insert(userRoleRows);
     if (insertError) {
       console.error("Insert user_guild_roles failed:", insertError);
-      return NextResponse.json({ error: "Failed to save user roles" }, { status: 500 });
+      return NextResponse.json({ ok: false, error: "Failed to save user roles" }, { status: 500 });
     }
   }
 
-  // 9) Save guild settings fields the sync controls
+  // 10) Save guild settings fields the sync controls
   const { error: settingsError } = await supabaseAdmin.from("guild_settings").upsert(
     {
       guild_id: guildId,
@@ -168,7 +226,7 @@ export async function POST() {
 
   if (settingsError) {
     console.error("Upsert guild_settings failed:", settingsError);
-    return NextResponse.json({ error: "Failed to update guild settings" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Failed to update guild settings" }, { status: 500 });
   }
 
   return NextResponse.json(
