@@ -18,7 +18,7 @@ function normKind(v: string) {
 
 export async function POST(req: Request) {
   // Officer gate (server authoritative)
-  const gate = await requireOfficer();
+  const gate = await requireOfficer(req);
   if (!gate.ok) {
     return NextResponse.json({ ok: false, error: gate.error }, { status: gate.status });
   }
