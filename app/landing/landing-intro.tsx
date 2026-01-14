@@ -34,6 +34,16 @@ function rand(min: number, max: number) {
   return Math.random() * (max - min) + min;
 }
 
+type Ember = {
+  key: string;
+  size: number;
+  left: string;
+  top: string;
+  delay: string;
+  dur: string;
+  opacity: number;
+};
+
 export default function LandingIntro(props: { guildId: string }) {
   const [loaded, setLoaded] = useState(false);
   const [entering, setEntering] = useState(false);
@@ -45,16 +55,17 @@ export default function LandingIntro(props: { guildId: string }) {
   }, [props.guildId]);
 
   const dashboardHref = useMemo(() => {
-    // Your dashboard route is "/"
     return buildUrl("/", { guildId });
   }, [guildId]);
 
-  // Precreate embers once
-  const embers = useMemo(() => {
+  // 👉 Client-only ember generation (prevents hydration mismatch)
+  const embers = useMemo<Ember[]>(() => {
+    if (!loaded) return [];
+
     return Array.from({ length: 22 }).map((_, i) => {
       const size = rand(2, 6);
       return {
-        key: `e${i}`,
+        key: `e${i}-${Math.random().toString(16).slice(2)}`,
         size,
         left: `${rand(0, 100)}%`,
         top: `${rand(55, 92)}%`,
@@ -63,7 +74,7 @@ export default function LandingIntro(props: { guildId: string }) {
         opacity: rand(0.35, 0.85),
       };
     });
-  }, []);
+  }, [loaded]);
 
   useEffect(() => {
     const t = setTimeout(() => setLoaded(true), 220);
@@ -88,21 +99,23 @@ export default function LandingIntro(props: { guildId: string }) {
 
       <div className="logo">
         <div className="embers" aria-hidden="true">
-          {embers.map((e) => (
-            <span
-              key={e.key}
-              className="ember"
-              style={{
-                width: e.size,
-                height: e.size,
-                left: e.left,
-                top: e.top,
-                animationDelay: e.delay,
-                animationDuration: e.dur,
-                opacity: e.opacity,
-              }}
-            />
-          ))}
+          {loaded
+            ? embers.map((e) => (
+                <span
+                  key={e.key}
+                  className="ember"
+                  style={{
+                    width: e.size,
+                    height: e.size,
+                    left: e.left,
+                    top: e.top,
+                    animationDelay: e.delay,
+                    animationDuration: e.dur,
+                    opacity: e.opacity,
+                  }}
+                />
+              ))
+            : null}
         </div>
 
         <h1 className="logoText" aria-label={titleText}>
@@ -131,7 +144,7 @@ export default function LandingIntro(props: { guildId: string }) {
           overflow: hidden;
           background: radial-gradient(circle at center, ${THEME.shroudMist} 0%, ${THEME.shroudDeep} 80%, #000 100%);
           color: ${THEME.textSilver};
-          fontFamily: "Segoe UI", Roboto, serif;
+          font-family: "Segoe UI", Roboto, serif;
         }
 
         .fog {
@@ -187,7 +200,7 @@ export default function LandingIntro(props: { guildId: string }) {
         .ember {
           position: absolute;
           background: ${THEME.flameAmber};
-          borderRadius: 999px;
+          border-radius: 999px;
           filter: blur(1px);
           animation-name: rise;
           animation-timing-function: ease-out;
@@ -209,13 +222,12 @@ export default function LandingIntro(props: { guildId: string }) {
         .tagline {
           margin: 10px 0 0;
           color: ${THEME.textAsh};
-          fontSize: 12px;
+          font-size: 12px;
           letter-spacing: 5px;
           text-transform: uppercase;
           opacity: 0.75;
         }
 
-        /* Button styled to match your stone cards */
         .enterBtn {
           margin-top: 34px;
           padding: 14px 22px;
@@ -249,7 +261,6 @@ export default function LandingIntro(props: { guildId: string }) {
           transition: opacity 1.1s ease;
         }
 
-        /* Loaded state */
         .loaded .fog {
           opacity: 0.92;
           transition: opacity 1.2s ease;
@@ -270,7 +281,6 @@ export default function LandingIntro(props: { guildId: string }) {
           opacity: 1;
         }
 
-        /* Entering state */
         .entering .fog {
           transition: transform 0.95s cubic-bezier(0.7, 0, 0.3, 1), opacity 0.75s ease;
           transform: scale(9) translateY(18%);

@@ -43,6 +43,40 @@ function hasManagePerms(body: any) {
 }
 
 // =======================================================
+// Small utils
+// =======================================================
+function isSnowflake(id: string) {
+  return /^\d{10,25}$/.test(String(id || "").trim());
+}
+
+function cleanBaseUrl(url: string) {
+  return String(url || "").trim().replace(/\/+$/, "");
+}
+
+function getPublicBaseUrl() {
+  // Prefer explicit app URL (ngrok / prod domain)
+  const explicit =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
+    "";
+
+  const base = cleanBaseUrl(explicit);
+  return base || "http://localhost:3000";
+}
+
+function hubLink(path: string, guildId: string) {
+  const base = getPublicBaseUrl();
+  const qs = guildId ? `?guildId=${encodeURIComponent(guildId)}` : "";
+  return `${base}${path}${qs}`;
+}
+
+function optionValue(body: any, name: string) {
+  const opt = body?.data?.options?.find((o: any) => o.name === name);
+  return opt?.value;
+}
+
+// =======================================================
 // Icons + helpers
 // =======================================================
 function normalizeGroupKey(groupKey: string) {
@@ -541,37 +575,89 @@ export async function POST(req: Request) {
       // /setup
       // -----------------------------
       if (commandName === "setup") {
-        const channel = body.data?.options?.find((o: any) => o.name === "channel")?.value;
+        const guildId = String(body.guild_id || "").trim();
+        const token = String(body.token || "").trim();
 
-        if (!channel) {
+        const channelIdRaw = optionValue(body, "channel");
+        const officerRoleIdRaw = optionValue(body, "officer_role");
+
+        const channelId = channelIdRaw ? String(channelIdRaw).trim() : "";
+        const officerRoleId = officerRoleIdRaw ? String(officerRoleIdRaw).trim() : "";
+
+        if (!guildId || !isSnowflake(guildId)) {
           return NextResponse.json({
             type: 4,
-            data: { content: "Missing channel option.", flags: 64 },
+            data: { content: "This command must be used inside a Discord server (guild).", flags: 64 },
           });
         }
 
-        const appId = process.env.DISCORD_APPLICATION_ID;
-        if (!appId) {
+        if (!channelId && !officerRoleId) {
           return NextResponse.json({
             type: 4,
-            data: { content: "Server misconfig: DISCORD_APPLICATION_ID missing.", flags: 64 },
+            data: {
+              content: "Missing options. Provide at least one: channel or officer_role.",
+              flags: 64,
+            },
           });
         }
 
+        if (channelId && !isSnowflake(channelId)) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Invalid channel id provided.", flags: 64 },
+          });
+        }
+
+        if (officerRoleId && !isSnowflake(officerRoleId)) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Invalid officer role id provided.", flags: 64 },
+          });
+        }
+
+        // Defer immediately, then save in background
         void (async () => {
           try {
-            await supabaseAdmin.from("discord_servers").upsert({
-              guild_id: body.guild_id,
-              channel_id: channel,
-              updated_at: new Date().toISOString(),
-            });
+            // Save posting channel (existing behavior)
+            if (channelId) {
+              await supabaseAdmin.from("discord_servers").upsert({
+                guild_id: guildId,
+                channel_id: channelId,
+                updated_at: new Date().toISOString(),
+              });
+            }
 
-            await postToInteractionWebhook({ token: body.token, content: "✅ Channel saved successfully.", flags: 64 });
+            // Save officer role (new behavior, in guild_settings)
+            if (officerRoleId) {
+              await supabaseAdmin.from("guild_settings").upsert({
+                guild_id: guildId,
+                officer_role_id: officerRoleId,
+                updated_at: new Date().toISOString(),
+              });
+            }
+
+            const lines: string[] = [];
+            lines.push("✅ Setup saved.");
+
+            if (channelId) lines.push(`• Post channel: <#${channelId}>`);
+            if (officerRoleId) lines.push(`• Officer role: <@&${officerRoleId}>`);
+
+            lines.push("");
+            lines.push("Hub links:");
+            lines.push(`• Roles: ${hubLink("/roles", guildId)}`);
+            lines.push(`• Setup guide: ${hubLink("/setup", guildId)}`);
+            lines.push(`• Manage users: ${hubLink("/roles/manage-users", guildId)}`);
+
+            // Small heads up for auth cookie problems when using ngrok
+            lines.push("");
+            lines.push("If login issues happen, use one consistent host (ngrok OR localhost) to avoid cookie mismatch.");
+
+            await postToInteractionWebhook({ token, content: lines.join("\n"), flags: 64 });
           } catch (e) {
             console.error("Setup save failed:", e);
             await postToInteractionWebhook({
-              token: body.token,
-              content: "❌ Failed to save channel. Check server logs.",
+              token,
+              content: "❌ Failed to save setup. Check server logs.",
               flags: 64,
             });
           }
@@ -587,13 +673,13 @@ export async function POST(req: Request) {
         const guildId = String(body.guild_id || "").trim();
         const token = String(body.token || "").trim();
 
-        const title = String(body.data?.options?.find((o: any) => o.name === "title")?.value || "").trim();
-        const whenInput = String(body.data?.options?.find((o: any) => o.name === "when")?.value || "").trim();
+        const title = String(optionValue(body, "title") || "").trim();
+        const whenInput = String(optionValue(body, "when") || "").trim();
         const parsedWhen = parseWhenToChicagoIso(whenInput);
         const when = parsedWhen.ok ? parsedWhen.iso : "";
 
-        const durationMinutes = Number(body.data?.options?.find((o: any) => o.name === "duration")?.value || 0);
-        const notesRaw = body.data?.options?.find((o: any) => o.name === "notes")?.value;
+        const durationMinutes = Number(optionValue(body, "duration") || 0);
+        const notesRaw = optionValue(body, "notes");
         const notes = String(notesRaw || "").trim();
 
         if (!guildId) {

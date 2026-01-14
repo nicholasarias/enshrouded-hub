@@ -126,6 +126,8 @@ function TopBar(props: { discordName: string | null; level: number; guildId: str
   const rolesHref = buildUrl("/roles", { guildId: props.guildId });
   const sessionsHref = buildUrl("/sessions", { guildId: props.guildId });
   const manageRolesHref = buildUrl("/roles/manage", { guildId: props.guildId });
+  const setupHref = "/setup";
+
 
   return (
     <div
@@ -219,6 +221,26 @@ function TopBar(props: { discordName: string | null; level: number; guildId: str
             >
               Roles
             </a>
+            <a
+  href={setupHref}
+  style={{
+    padding: "10px 12px",
+    borderRadius: 999,
+    border: `1px solid ${THEME.stoneBorder}`,
+    background: "rgba(12,14,18,0.6)",
+    color: THEME.textSilver,
+    textDecoration: "none",
+    fontWeight: 950,
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    fontSize: 12,
+    backdropFilter: "blur(6px)",
+    whiteSpace: "nowrap",
+  }}
+>
+  Setup
+</a>
+
 
             <a
               href={sessionsHref}

@@ -20,14 +20,20 @@ const url = `https://discord.com/api/v10/applications/${appId}/guilds/${guildId}
 const body = [
   {
     name: "setup",
-    description: "Set the channel for Enshrouded Hub session posts",
+    description: "Configure Enshrouded Hub for this server (channel and officer role)",
     type: 1,
     options: [
       {
         name: "channel",
         description: "Channel to post sessions in",
-        type: 7,
-        required: true,
+        type: 7, // CHANNEL
+        required: false,
+      },
+      {
+        name: "officer_role",
+        description: "Role that grants officer access inside the Hub",
+        type: 8, // ROLE
+        required: false,
       },
     ],
   },
