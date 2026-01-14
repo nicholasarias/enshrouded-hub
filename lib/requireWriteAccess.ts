@@ -13,7 +13,7 @@ export async function requireWriteAccess(req: Request): Promise<GateResult> {
 
   if (validApiKey) return { ok: true };
 
-  const gate = await requireOfficer();
+  const gate = await requireOfficer(req);
   if (!gate.ok) return gate;
 
   return { ok: true };
