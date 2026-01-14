@@ -8,16 +8,8 @@ export const revalidate = 0;
 export default function HubLayout({ children }: { children: ReactNode }) {
   return (
     <Providers>
-      <div className="min-h-screen">
-        <header className="flex items-center justify-between px-4 py-3">
-          <div className="text-sm font-semibold text-zinc-200">
-            Enshrouded Hub
-          </div>
-          <AuthButton />
-        </header>
+          <div className="min-h-screen">{children}</div>
 
-        <main className="px-4 py-4">{children}</main>
-      </div>
     </Providers>
   );
 }

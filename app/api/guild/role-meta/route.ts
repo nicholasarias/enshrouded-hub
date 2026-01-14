@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 function isSnowflake(id: string) {
-  return /^\d{10,25}$/.test(id);
+  return /^\d{10,25}$/.test(String(id || "").trim());
 }
 
 export async function GET(req: Request) {
@@ -13,7 +13,7 @@ export async function GET(req: Request) {
   const guildId = String(url.searchParams.get("guildId") || "").trim();
 
   if (!guildId || !isSnowflake(guildId)) {
-    return NextResponse.json({ error: "Missing or invalid guildId" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "Missing or invalid guildId" }, { status: 400 });
   }
 
   const { data, error } = await supabaseAdmin
@@ -27,7 +27,7 @@ export async function GET(req: Request) {
 
   if (error) {
     console.error("guild_role_meta select failed:", error);
-    return NextResponse.json({ error: "Failed to load role meta" }, { status: 500 });
+    return NextResponse.json({ ok: false, error: "Failed to load role meta" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true, guildId, roles: data ?? [] }, { status: 200 });

@@ -10,6 +10,14 @@ function isUpcoming(startLocal: string) {
   return ms >= Date.now() - 60 * 60 * 1000; // keep 1 hour past
 }
 
+type Counts = { in: number; maybe: number; out: number };
+
+function normalizeStatus(input: any): "in" | "maybe" | "out" | null {
+  const s = String(input || "").toLowerCase().trim();
+  if (s === "in" || s === "maybe" || s === "out") return s;
+  return null;
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const guildId = String(url.searchParams.get("guildId") || "").trim();
@@ -47,5 +55,41 @@ export async function GET(req: Request) {
     upcoming: isUpcoming(String(s.start_local ?? "")),
   }));
 
-  return NextResponse.json({ sessions });
+  // RSVP counts in one pass
+  const ids = sessions.map((s) => s.id).filter(Boolean);
+  const countsBySession = new Map<string, Counts>();
+
+  for (const id of ids) countsBySession.set(id, { in: 0, maybe: 0, out: 0 });
+
+  if (ids.length) {
+    const { data: rsvps, error: rsvpErr } = await supabaseAdmin
+      .from("session_rsvps")
+      .select("session_id,status")
+      .in("session_id", ids);
+
+    if (rsvpErr) {
+      console.error("rsvp counts failed:", rsvpErr);
+    } else {
+      for (const row of rsvps ?? []) {
+        const sid = String((row as any)?.session_id || "");
+        const status = normalizeStatus((row as any)?.status);
+
+        const cur = countsBySession.get(sid);
+        if (!cur || !status) continue;
+
+        if (status === "in") cur.in += 1;
+        else if (status === "maybe") cur.maybe += 1;
+        else if (status === "out") cur.out += 1;
+
+        countsBySession.set(sid, cur);
+      }
+    }
+  }
+
+  const sessionsWithCounts = sessions.map((s) => ({
+    ...s,
+    counts: countsBySession.get(s.id) || { in: 0, maybe: 0, out: 0 },
+  }));
+
+  return NextResponse.json({ sessions: sessionsWithCounts });
 }

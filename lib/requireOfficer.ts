@@ -25,7 +25,8 @@ function pickDiscordUserId(session: any): string | null {
   return null;
 }
 
-export async function requireOfficer() {
+export async function requireOfficer(req: Request) {
+
   const session = await auth();
   if (!session?.user) {
     return { ok: false as const, status: 401 as const, error: "Unauthorized" };

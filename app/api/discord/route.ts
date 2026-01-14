@@ -4,7 +4,10 @@ import { NextResponse } from "next/server";
 import nacl from "tweetnacl";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { DateTime } from "luxon";
+import { buildSessionEmbedPayload, type BadgeParts } from "@/lib/discordSessionEmbed";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 // =======================================================
 // Discord request verification
@@ -18,6 +21,25 @@ function verifyDiscordRequest(req: Request, body: string, signature: string, tim
     Buffer.from(signature, "hex"),
     Buffer.from(publicKey, "hex")
   );
+}
+
+// =======================================================
+// Permission helpers (Discord built-in permissions)
+// Works without BigInt / ES2020
+// =======================================================
+
+// Discord permission bit values (decimal strings from Discord API)
+const PERM_ADMINISTRATOR = 8; // 0x8
+const PERM_MANAGE_GUILD = 32; // 0x20
+
+function hasManagePerms(body: any) {
+  const permStr = body?.member?.permissions;
+  if (!permStr) return false;
+
+  const perms = Number(permStr);
+  if (!Number.isFinite(perms)) return false;
+
+  return (perms & PERM_ADMINISTRATOR) !== 0 || (perms & PERM_MANAGE_GUILD) !== 0;
 }
 
 // =======================================================
@@ -55,34 +77,6 @@ function groupIcon(groupKey: string) {
   return "❔";
 }
 
-function mention(discordId: string) {
-  return `<@${discordId}>`;
-}
-// =======================================================
-// Permission helpers (Discord built-in permissions)
-// Works without BigInt / ES2020
-// =======================================================
-
-// Discord permission bit values (decimal strings from Discord API)
-const PERM_ADMINISTRATOR = 8;  // 0x8
-const PERM_MANAGE_GUILD = 32;  // 0x20
-
-function hasManagePerms(body: any) {
-  const permStr = body?.member?.permissions;
-  if (!permStr) return false;
-
-  const perms = Number(permStr);
-  if (!Number.isFinite(perms)) return false;
-
-  return (perms & PERM_ADMINISTRATOR) !== 0 || (perms & PERM_MANAGE_GUILD) !== 0;
-}
-
-
-function toUnixSeconds(isoOrText: string) {
-  const ms = Date.parse(String(isoOrText));
-  if (!Number.isFinite(ms)) return null;
-  return Math.floor(ms / 1000);
-}
 const CHI_ZONE = "America/Chicago";
 
 function parseWhenToChicagoIso(inputRaw: string) {
@@ -94,7 +88,6 @@ function parseWhenToChicagoIso(inputRaw: string) {
   // 1) Try ISO first (best)
   let dt = DateTime.fromISO(input, { setZone: true });
   if (dt.isValid) {
-    // Convert to Chicago time but keep the same instant
     dt = dt.setZone(CHI_ZONE);
     return { ok: true as const, iso: dt.toISO()! };
   }
@@ -120,7 +113,6 @@ function parseWhenToChicagoIso(inputRaw: string) {
       if (ap === "am") h = h === 12 ? 0 : h;
       if (ap === "pm") h = h === 12 ? 12 : h + 12;
     } else {
-      // 24h
       if (h < 0 || h > 23) return null;
     }
 
@@ -146,20 +138,32 @@ function parseWhenToChicagoIso(inputRaw: string) {
 
   // 3) "fri 9pm" / "friday 21:00"
   {
-    const m = s.match(/^(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+(.+)$/);
+    const m = s.match(
+      /^(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+(.+)$/
+    );
     if (m) {
       const dayStr = m[1];
       const time = parseTimeOnly(m[2]);
       if (!time) return { ok: false as const, error: `Could not parse time: "${m[2]}"` };
 
       const map: Record<string, number> = {
-        sun: 7, sunday: 7,
-        mon: 1, monday: 1,
-        tue: 2, tues: 2, tuesday: 2,
-        wed: 3, wednesday: 3,
-        thu: 4, thur: 4, thurs: 4, thursday: 4,
-        fri: 5, friday: 5,
-        sat: 6, saturday: 6,
+        sun: 7,
+        sunday: 7,
+        mon: 1,
+        monday: 1,
+        tue: 2,
+        tues: 2,
+        tuesday: 2,
+        wed: 3,
+        wednesday: 3,
+        thu: 4,
+        thur: 4,
+        thurs: 4,
+        thursday: 4,
+        fri: 5,
+        friday: 5,
+        sat: 6,
+        saturday: 6,
       };
 
       const target = map[dayStr] || 0;
@@ -170,7 +174,6 @@ function parseWhenToChicagoIso(inputRaw: string) {
       const daysAhead = (target - base.weekday + 7) % 7;
       base = daysAhead === 0 ? base : base.plus({ days: daysAhead });
 
-      // If user says "fri" and it's already past that time today, push to next week
       let out = applyTime(base, time);
       if (daysAhead === 0 && out <= now) out = out.plus({ days: 7 });
 
@@ -193,7 +196,6 @@ function parseWhenToChicagoIso(inputRaw: string) {
 
       let out = applyTime(base, time);
 
-      // If date already passed this year, assume next year
       if (out < now.minus({ minutes: 1 })) {
         base = base.plus({ years: 1 });
         out = applyTime(base, time);
@@ -231,44 +233,8 @@ function parseWhenToChicagoIso(inputRaw: string) {
 
   return {
     ok: false as const,
-    error:
-      `Could not parse when: "${input}". Try: "8:30pm", "tomorrow 7pm", "fri 9pm", "1/14 6pm", or ISO.`,
+    error: `Could not parse when: "${input}". Try: "8:30pm", "tomorrow 7pm", "fri 9pm", "1/14 6pm", or ISO.`,
   };
-}
-
-
-type BadgeParts = {
-  combat: string; // 🛡 | 🧙 | 🏹 | ❔
-  logistics: string; // 🏗️ | 🌾 | 📦 | 🍲 | ⛏️ | 🧰 | ❔
-};
-
-function isCombatIcon(icon: string) {
-  return icon === "🛡" || icon === "🧙" || icon === "🏹";
-}
-
-// Sort order for combat
-const COMBAT_SORT: Record<string, number> = {
-  "🛡": 0,
-  "🧙": 1,
-  "🏹": 2,
-  "❔": 3,
-};
-
-// Sort order for logistics
-const LOGI_SORT: Record<string, number> = {
-  "🏗️": 0,
-  "🌾": 1,
-  "📦": 2,
-  "🍲": 3,
-  "⛏️": 4,
-  "🧰": 5,
-  "❔": 6,
-};
-
-function getSortKey(parts: BadgeParts) {
-  const a = COMBAT_SORT[parts.combat] ?? 9;
-  const b = LOGI_SORT[parts.logistics] ?? 9;
-  return `${String(a).padStart(2, "0")}-${String(b).padStart(2, "0")}`;
 }
 
 // =======================================================
@@ -373,213 +339,14 @@ async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discor
     const combatIcon = combatGroup ? groupIcon(combatGroup) : "❔";
     const logiIcon = logiGroup ? groupIcon(logiGroup) : "❔";
 
-    const safeCombat = isCombatIcon(combatIcon) ? combatIcon : "❔";
+    // Shared embed builder expects only valid combat icons
+    const safeCombat = combatIcon === "🛡" || combatIcon === "🧙" || combatIcon === "🏹" ? combatIcon : "❔";
     const safeLogi = logiIcon || "❔";
 
     result.set(discordId, { combat: safeCombat, logistics: safeLogi });
   }
 
   return result;
-}
-
-// =======================================================
-// Embed builders
-// =======================================================
-function buildLogisticsBreakdown(params: { discordIds: string[]; badgeParts: Map<string, BadgeParts>; maxChars: number }) {
-  const { discordIds, badgeParts, maxChars } = params;
-
-  const counts = new Map<string, number>();
-  for (const id of discordIds) {
-    const parts = badgeParts.get(id) || { combat: "❔", logistics: "❔" };
-    const key = parts.logistics || "❔";
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-
-  const entries = Array.from(counts.entries()).sort((a, b) => {
-    const aa = LOGI_SORT[a[0]] ?? 9;
-    const bb = LOGI_SORT[b[0]] ?? 9;
-    return aa - bb;
-  });
-
-  let text = entries.map(([icon, n]) => `${icon} x${n}`).join("  ·  ");
-  if (!text) text = "—";
-
-  if (text.length > maxChars) {
-    text = text.slice(0, Math.max(0, maxChars - 3)) + "...";
-  }
-
-  return text;
-}
-
-function buildList(params: {
-  discordIds: string[];
-  badgeParts: Map<string, BadgeParts>;
-  maxShown: number;
-  maxChars: number;
-  showBadges?: boolean;
-}) {
-  const { discordIds, badgeParts, maxShown, maxChars, showBadges = true } = params;
-
-  const sortedIds = [...discordIds].sort((a, b) => {
-    const pa = badgeParts.get(a) || { combat: "❔", logistics: "❔" };
-    const pb = badgeParts.get(b) || { combat: "❔", logistics: "❔" };
-    return getSortKey(pa).localeCompare(getSortKey(pb));
-  });
-
-  const groups: Record<string, string[]> = {
-    "🛡": [],
-    "🧙": [],
-    "🏹": [],
-    "❔": [],
-  };
-
-  for (const id of sortedIds) {
-    const p = badgeParts.get(id) || { combat: "❔", logistics: "❔" };
-    const combat = p.combat || "❔";
-    if (!groups[combat]) groups["❔"].push(id);
-    else groups[combat].push(id);
-  }
-
-  const order: Array<{ icon: string; label: string }> = [
-    { icon: "🛡", label: "Strength" },
-    { icon: "🧙", label: "Intelligence" },
-    { icon: "🏹", label: "Dexterity" },
-    { icon: "❔", label: "Unassigned" },
-  ];
-
-  const lines: string[] = [];
-  let shownCount = 0;
-
-  for (const g of order) {
-    const ids = groups[g.icon];
-    if (!ids || !ids.length) continue;
-
-    lines.push(`${g.icon} **${g.label}**`);
-
-    for (const id of ids) {
-      if (shownCount >= maxShown) break;
-      const p = badgeParts.get(id) || { combat: "❔", logistics: "❔" };
-      lines.push(showBadges ? `${p.combat}${p.logistics} ${mention(id)}` : `${mention(id)}`);
-      shownCount++;
-    }
-
-    lines.push("");
-    if (shownCount >= maxShown) break;
-  }
-
-  const remaining = discordIds.length - shownCount;
-  if (remaining > 0) lines.push(`… +${remaining} more`);
-
-  let text = lines.join("\n").trim();
-  if (text.length > maxChars) text = text.slice(0, Math.max(0, maxChars - 3)) + "...";
-
-  return text || "—";
-}
-
-function buildSessionEmbedPayload(params: {
-  sessionId: string;
-  title: string;
-  startLocal: string;
-  durationMinutes: number;
-  notes: string | null;
-  guildId: string;
-  inUsers: string[];
-  maybeUsers: string[];
-  outUsers: string[];
-  badgeParts: Map<string, BadgeParts>;
-}) {
-  const { sessionId, title, startLocal, durationMinutes, notes, guildId, inUsers, maybeUsers, outUsers, badgeParts } = params;
-
-  const inCount = inUsers.length;
-  const maybeCount = maybeUsers.length;
-  const outCount = outUsers.length;
-
-  const whenUnix = toUnixSeconds(startLocal);
-  const whenText = whenUnix ? `<t:${whenUnix}:F> (<t:${whenUnix}:R>)` : String(startLocal);
-
-  const inList = buildList({
-    discordIds: inUsers,
-    badgeParts,
-    maxShown: 10,
-    maxChars: 900,
-    showBadges: true,
-  });
-
-  const maybeList = buildList({
-    discordIds: maybeUsers,
-    badgeParts,
-    maxShown: 10,
-    maxChars: 900,
-    showBadges: false,
-  });
-
-  const outList = buildList({
-    discordIds: outUsers,
-    badgeParts,
-    maxShown: 10,
-    maxChars: 900,
-    showBadges: false,
-  });
-
-  const logisticsBreakdown = buildLogisticsBreakdown({
-    discordIds: inUsers,
-    badgeParts,
-    maxChars: 900,
-  });
-
-  const legend =
-    "Combat: 🛡 Strength  ·  🧙 Intelligence  ·  🏹 Dexterity\n" +
-    "Logistics: 🏗️ Architect  ·  🌾 Agronomist  ·  📦 Quartermaster  ·  🍲 Provisioner  ·  ⛏️ Excavator\n" +
-    "Missing selection: ❔";
-
-    const notesText = (notes || "").trim();
-  const hasNotes = notesText.length > 0;
-
-  const headerLines: string[] = [];
-  headerLines.push(`**When:** ${whenText}`);
-  headerLines.push(`**Duration:** ${Number(durationMinutes)} minutes`);
-  if (hasNotes) headerLines.push(`**Notes:** ${notesText}`);
-
-  const summaryLine = `✅ **In:** ${inCount}   ❔ **Maybe:** ${maybeCount}   ❌ **Out:** ${outCount}`;
-
-  return {
-    embeds: [
-      {
-        title: `🕯️ Session: ${title}`,
-        image: {
-          url: "https://cdn.discordapp.com/attachments/1391170867588894811/1460489545534406788/image.png"
-  },
-        description: `${headerLines.join("\n")}\n\n${summaryLine}`,
-        timestamp: new Date().toISOString(),
-        // Shroud teal vibe (keep what you like)
-        color: 0x1f9aa8,
-        fields: [
-          { name: "📦 Logistics (In only)", value: logisticsBreakdown, inline: false },
-          { name: `✅ In (${inCount})`, value: inList, inline: false },
-          { name: `❔ Maybe (${maybeCount})`, value: maybeList, inline: false },
-          { name: `❌ Out (${outCount})`, value: outList, inline: false },
-        ],
-        footer: {
-  text:
-    "🛡 Strength · 🧙 Intelligence · 🏹 Dexterity  |  " +
-    "🏗️ Architect · 🌾 Agronomist · 📦 Quartermaster · 🍲 Provisioner · ⛏️ Excavator" +
-    `  •  Session ID: ${sessionId}`,
-},
-
-      },
-    ],
-    components: [
-      {
-        type: 1,
-        components: [
-          { type: 2, style: 3, label: `In (${inCount})`, custom_id: `rsvp:${sessionId}:in` },
-          { type: 2, style: 1, label: `Maybe (${maybeCount})`, custom_id: `rsvp:${sessionId}:maybe` },
-          { type: 2, style: 4, label: `Out (${outCount})`, custom_id: `rsvp:${sessionId}:out` },
-        ],
-      },
-    ],
-  };
-
 }
 
 // =======================================================
@@ -595,7 +362,8 @@ async function postToInteractionWebhook(params: { token: string; content: string
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       content: params.content,
-      flags: params.flags ?? 64, // ephemeral by default
+      flags: params.flags ?? 64,
+      allowed_mentions: { parse: [] },
     }),
   }).catch(() => null);
 }
@@ -630,7 +398,6 @@ async function postChannelMessageAsBot(params: { channelId: string; payload: any
   return json;
 }
 
-
 async function patchChannelMessageAsBot(params: { channelId: string; messageId: string; payload: any }) {
   const botToken = process.env.DISCORD_BOT_TOKEN;
   if (!botToken) throw new Error("DISCORD_BOT_TOKEN missing on server.");
@@ -655,91 +422,12 @@ async function patchChannelMessageAsBot(params: { channelId: string; messageId: 
   }
 }
 
-
 // =======================================================
 // RSVP message refresh (used for button clicks)
 // =======================================================
-async function updateOriginalInteractionMessage(params: { token: string; sessionId: string; guildId: string }) {
-  const { token, sessionId, guildId } = params;
-
-  const appId = process.env.DISCORD_APPLICATION_ID;
-  if (!appId) {
-    console.error("DISCORD_APPLICATION_ID missing");
-    return;
-  }
-
-  // Load session
-  const { data: session, error: sessionErr } = await supabaseAdmin
-    .from("sessions")
-    .select("title,start_local,duration_minutes,notes,guild_id")
-    .eq("id", sessionId)
-    .single();
-
-  if (sessionErr || !session) {
-    console.error("Session lookup failed:", sessionErr);
-    return;
-  }
-
-  // Load RSVPs
-  const { data: rsvps, error: rsvpsErr } = await supabaseAdmin
-    .from("session_rsvps")
-    .select("status,user_id")
-    .eq("session_id", sessionId);
-
-  if (rsvpsErr) {
-    console.error("RSVP load failed:", rsvpsErr);
-    return;
-  }
-
-  const inUsers: string[] = [];
-  const maybeUsers: string[] = [];
-  const outUsers: string[] = [];
-
-  for (const r of rsvps ?? []) {
-    const s = String((r as any).status || "");
-    const did = String((r as any).user_id || "");
-    if (!did) continue;
-
-    if (s === "in") inUsers.push(did);
-    if (s === "maybe") maybeUsers.push(did);
-    if (s === "out") outUsers.push(did);
-  }
-
-  const allIds = Array.from(new Set([...inUsers, ...maybeUsers, ...outUsers]));
-  const badgeParts = guildId
-    ? await loadUserBadgePartsForDiscordIds({ guildId, discordIds: allIds })
-    : new Map<string, BadgeParts>();
-
-  const payload = buildSessionEmbedPayload({
-    sessionId,
-    title: String((session as any).title),
-    startLocal: String((session as any).start_local),
-    durationMinutes: Number((session as any).duration_minutes),
-    notes: ((session as any).notes as string) || null,
-    guildId,
-    inUsers,
-    maybeUsers,
-    outUsers,
-    badgeParts,
-  });
-
-  const url = `https://discord.com/api/v10/webhooks/${appId}/${token}/messages/@original`;
-
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    console.error("Discord PATCH failed:", res.status, text);
-  }
-}
 async function updatePostedSessionMessage(params: { sessionId: string }) {
   const { sessionId } = params;
 
-  // Load session with discord message info
   const { data: session, error: sessionErr } = await supabaseAdmin
     .from("sessions")
     .select("title,start_local,duration_minutes,notes,guild_id,discord_channel_id,discord_message_id")
@@ -760,7 +448,6 @@ async function updatePostedSessionMessage(params: { sessionId: string }) {
     return;
   }
 
-  // Load RSVPs
   const { data: rsvps, error: rsvpsErr } = await supabaseAdmin
     .from("session_rsvps")
     .select("status,user_id")
@@ -803,278 +490,274 @@ async function updatePostedSessionMessage(params: { sessionId: string }) {
     badgeParts,
   });
 
-  // Patch the posted message in the channel
-  await patchChannelMessageAsBot({
-    channelId,
-    messageId,
-    payload,
-  });
+  await patchChannelMessageAsBot({ channelId, messageId, payload });
 }
-
 
 // =======================================================
 // Main handler
 // =======================================================
 export async function POST(req: Request) {
   try {
-  console.log("DISCORD HIT", new Date().toISOString());
+    console.log("DISCORD HIT", new Date().toISOString());
 
-  const signature = req.headers.get("x-signature-ed25519");
-  const timestamp = req.headers.get("x-signature-timestamp");
+    const signature = req.headers.get("x-signature-ed25519");
+    const timestamp = req.headers.get("x-signature-timestamp");
 
-  if (!signature || !timestamp) {
-    return new Response("Missing Discord signature headers", { status: 401 });
-  }
-
-  const rawBody = await req.text();
-
-  if (!rawBody || rawBody.length > 100_000) {
-    return new Response("Payload too large or empty", { status: 413 });
-  }
-
-  const isValid = verifyDiscordRequest(req, rawBody, signature, timestamp);
-  if (!isValid) {
-    return new Response("Invalid signature", { status: 401 });
-  }
-
-  const body = JSON.parse(rawBody);
-
-  // 1) PING
-  if (body.type === 1) {
-    return NextResponse.json({ type: 1 });
-  }
-
-  // 2) SLASH COMMANDS
-  if (body.type === 2) {
-    const commandName = body.data?.name;
-
-    // -----------------------------
-    // /setup
-    // -----------------------------
-    if (commandName === "setup") {
-      const channel = body.data?.options?.find((o: any) => o.name === "channel")?.value;
-
-      if (!channel) {
-        return NextResponse.json({
-          type: 4,
-          data: { content: "Missing channel option.", flags: 64 },
-        });
-      }
-
-      const appId = process.env.DISCORD_APPLICATION_ID;
-      if (!appId) {
-        return NextResponse.json({
-          type: 4,
-          data: { content: "Server misconfig: DISCORD_APPLICATION_ID missing.", flags: 64 },
-        });
-      }
-
-      void (async () => {
-        try {
-          await supabaseAdmin.from("discord_servers").upsert({
-            guild_id: body.guild_id,
-            channel_id: channel,
-            updated_at: new Date().toISOString(),
-          });
-
-          await postToInteractionWebhook({ token: body.token, content: "✅ Channel saved successfully.", flags: 64 });
-        } catch (e) {
-          console.error("Setup save failed:", e);
-          await postToInteractionWebhook({
-            token: body.token,
-            content: "❌ Failed to save channel. Check server logs.",
-            flags: 64,
-          });
-        }
-      })();
-
-      return NextResponse.json({ type: 5, data: { flags: 64 } });
+    if (!signature || !timestamp) {
+      return new Response("Missing Discord signature headers", { status: 401 });
     }
 
-    // -----------------------------
-    // /rsvp (CREATE session + post)
-    // -----------------------------
-    if (commandName === "rsvp") {
-      const guildId = String(body.guild_id || "").trim();
-      const token = String(body.token || "").trim();
+    const rawBody = await req.text();
 
-      const title = String(body.data?.options?.find((o: any) => o.name === "title")?.value || "").trim();
-      const whenInput = String(body.data?.options?.find((o: any) => o.name === "when")?.value || "").trim();
-      const parsedWhen = parseWhenToChicagoIso(whenInput);
-      const when = parsedWhen.ok ? parsedWhen.iso : "";
+    if (!rawBody || rawBody.length > 100_000) {
+      return new Response("Payload too large or empty", { status: 413 });
+    }
 
-      const durationMinutes = Number(body.data?.options?.find((o: any) => o.name === "duration")?.value || 0);
-      const notesRaw = body.data?.options?.find((o: any) => o.name === "notes")?.value;
-      const notes = String(notesRaw || "").trim();
+    const isValid = verifyDiscordRequest(req, rawBody, signature, timestamp);
+    if (!isValid) {
+      return new Response("Invalid signature", { status: 401 });
+    }
 
+    const body = JSON.parse(rawBody);
 
-      if (!guildId) {
+    // 1) PING
+    if (body.type === 1) {
+      return NextResponse.json({ type: 1 });
+    }
+
+    // 2) SLASH COMMANDS
+    if (body.type === 2) {
+      const commandName = body.data?.name;
+
+      // Require manage perms for setup + creating sessions
+      if ((commandName === "setup" || commandName === "rsvp") && !hasManagePerms(body)) {
         return NextResponse.json({
           type: 4,
-          data: { content: "This command must be used in a server (guild).", flags: 64 },
+          data: { content: "You need Manage Server (or Admin) to use this command.", flags: 64 },
         });
       }
 
-      if (!title) {
-        return NextResponse.json({ type: 4, data: { content: "Missing title.", flags: 64 } });
-      }
-      if (!whenInput) {
-  return NextResponse.json({
-    type: 4,
-    data: { content: "Missing when.", flags: 64 },
-  });
-}
-if (!parsedWhen.ok) {
-  return NextResponse.json({
-    type: 4,
-    data: { content: `Invalid when. ${parsedWhen.error}`, flags: 64 },
-  });
-}
+      // -----------------------------
+      // /setup
+      // -----------------------------
+      if (commandName === "setup") {
+        const channel = body.data?.options?.find((o: any) => o.name === "channel")?.value;
 
-      if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-        return NextResponse.json({
-          type: 4,
-          data: { content: "Duration must be a positive number of minutes.", flags: 64 },
-        });
-      }
+        if (!channel) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Missing channel option.", flags: 64 },
+          });
+        }
 
-      // Defer immediately (ephemeral), then do the work
-      void (async () => {
-        try {
-          // 1) Find configured channel
-          const { data: serverRow, error: serverErr } = await supabaseAdmin
-            .from("discord_servers")
-            .select("channel_id")
-            .eq("guild_id", guildId)
-            .maybeSingle();
+        const appId = process.env.DISCORD_APPLICATION_ID;
+        if (!appId) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Server misconfig: DISCORD_APPLICATION_ID missing.", flags: 64 },
+          });
+        }
 
-          if (serverErr) throw serverErr;
-          const channelId = String((serverRow as any)?.channel_id || "").trim();
-          if (!channelId) {
+        void (async () => {
+          try {
+            await supabaseAdmin.from("discord_servers").upsert({
+              guild_id: body.guild_id,
+              channel_id: channel,
+              updated_at: new Date().toISOString(),
+            });
+
+            await postToInteractionWebhook({ token: body.token, content: "✅ Channel saved successfully.", flags: 64 });
+          } catch (e) {
+            console.error("Setup save failed:", e);
             await postToInteractionWebhook({
-              token,
-              content: "❌ No channel configured. Run `/setup` first and choose the posting channel.",
+              token: body.token,
+              content: "❌ Failed to save channel. Check server logs.",
               flags: 64,
             });
-            return;
           }
+        })();
 
-          // 2) Create session in Supabase
-          const { data: inserted, error: insErr } = await supabaseAdmin
-            .from("sessions")
-            .insert({
-              guild_id: guildId,
-              title,
-              start_local: when, // store raw; if ISO parseable, embeds will show Discord timestamps
-              duration_minutes: durationMinutes,
-              notes: notes || "",
-              created_at: new Date().toISOString(),
-            } as any)
-            .select("id,title,start_local,duration_minutes,notes,guild_id")
-            .single();
+        return NextResponse.json({ type: 5, data: { flags: 64 } });
+      }
 
-          if (insErr) throw insErr;
+      // -----------------------------
+      // /rsvp (CREATE session + post)
+      // -----------------------------
+      if (commandName === "rsvp") {
+        const guildId = String(body.guild_id || "").trim();
+        const token = String(body.token || "").trim();
 
-          const sessionId = String((inserted as any).id);
+        const title = String(body.data?.options?.find((o: any) => o.name === "title")?.value || "").trim();
+        const whenInput = String(body.data?.options?.find((o: any) => o.name === "when")?.value || "").trim();
+        const parsedWhen = parseWhenToChicagoIso(whenInput);
+        const when = parsedWhen.ok ? parsedWhen.iso : "";
 
-          // 3) Build initial payload (no RSVPs yet)
-          const badgeParts = new Map<string, BadgeParts>();
-          const payload = buildSessionEmbedPayload({
-            sessionId,
-            title: String((inserted as any).title),
-            startLocal: String((inserted as any).start_local),
-            durationMinutes: Number((inserted as any).duration_minutes),
-            notes: String((inserted as any).notes || ""),
-            guildId,
-            inUsers: [],
-            maybeUsers: [],
-            outUsers: [],
-            badgeParts,
+        const durationMinutes = Number(body.data?.options?.find((o: any) => o.name === "duration")?.value || 0);
+        const notesRaw = body.data?.options?.find((o: any) => o.name === "notes")?.value;
+        const notes = String(notesRaw || "").trim();
+
+        if (!guildId) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "This command must be used in a server (guild).", flags: 64 },
           });
+        }
 
-          // 4) Post to channel as bot (and save message ids)
-const posted = await postChannelMessageAsBot({ channelId, payload });
-const postedMessageId = String((posted as any)?.id || "").trim();
+        if (!title) {
+          return NextResponse.json({ type: 4, data: { content: "Missing title.", flags: 64 } });
+        }
 
-console.log("Posted message response id:", postedMessageId);
-
-if (!postedMessageId) {
-  console.error("Failed to read posted message id from Discord response:", posted);
-  throw new Error("Discord did not return a message id.");
-}
-
-const { error: updErr } = await supabaseAdmin
-  .from("sessions")
-  .update({
-    discord_channel_id: channelId,
-    discord_message_id: postedMessageId,
-  } as any)
-  .eq("id", sessionId);
-
-if (updErr) {
-  console.error("Failed to save discord ids to sessions:", updErr);
-  throw updErr;
-}
-        // 5) Confirm to the command user
-          await postToInteractionWebhook({
-            token,
-            content: `✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``,
-            flags: 64,
+        if (!whenInput) {
+          return NextResponse.json({ type: 4, data: { content: "Missing when.", flags: 64 } });
+        }
+        if (!parsedWhen.ok) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: `Invalid when. ${parsedWhen.error}`, flags: 64 },
           });
-        } catch (e: any) {
-          console.error("/rsvp failed:", e);
-          await postToInteractionWebhook({
-            token,
-            content: `❌ Failed to create session.\n${e?.message || "Check server logs."}`,
-            flags: 64,
+        }
+
+        if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Duration must be a positive number of minutes.", flags: 64 },
           });
+        }
+
+        // Defer immediately (ephemeral), then do the work
+        void (async () => {
+          try {
+            // 1) Find configured channel
+            const { data: serverRow, error: serverErr } = await supabaseAdmin
+              .from("discord_servers")
+              .select("channel_id")
+              .eq("guild_id", guildId)
+              .maybeSingle();
+
+            if (serverErr) throw serverErr;
+            const channelId = String((serverRow as any)?.channel_id || "").trim();
+            if (!channelId) {
+              await postToInteractionWebhook({
+                token,
+                content: "❌ No channel configured. Run `/setup` first and choose the posting channel.",
+                flags: 64,
+              });
+              return;
+            }
+
+            // 2) Create session in Supabase
+            const { data: inserted, error: insErr } = await supabaseAdmin
+              .from("sessions")
+              .insert({
+                guild_id: guildId,
+                title,
+                start_local: when,
+                duration_minutes: durationMinutes,
+                notes: notes || "",
+                created_at: new Date().toISOString(),
+              } as any)
+              .select("id,title,start_local,duration_minutes,notes,guild_id")
+              .single();
+
+            if (insErr) throw insErr;
+
+            const sessionId = String((inserted as any).id);
+
+            // 3) Build initial payload (no RSVPs yet)
+            const badgeParts = new Map<string, BadgeParts>();
+            const payload = buildSessionEmbedPayload({
+              sessionId,
+              title: String((inserted as any).title),
+              startLocal: String((inserted as any).start_local),
+              durationMinutes: Number((inserted as any).duration_minutes),
+              notes: String((inserted as any).notes || ""),
+              guildId,
+              inUsers: [],
+              maybeUsers: [],
+              outUsers: [],
+              badgeParts,
+            });
+
+            // 4) Post to channel as bot (and save message ids)
+            const posted = await postChannelMessageAsBot({ channelId, payload });
+            const postedMessageId = String((posted as any)?.id || "").trim();
+
+            if (!postedMessageId) {
+              console.error("Failed to read posted message id from Discord response:", posted);
+              throw new Error("Discord did not return a message id.");
+            }
+
+            const { error: updErr } = await supabaseAdmin
+              .from("sessions")
+              .update({
+                discord_channel_id: channelId,
+                discord_message_id: postedMessageId,
+              } as any)
+              .eq("id", sessionId);
+
+            if (updErr) {
+              console.error("Failed to save discord ids to sessions:", updErr);
+              throw updErr;
+            }
+
+            // 5) Confirm to the command user
+            await postToInteractionWebhook({
+              token,
+              content: `✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``,
+              flags: 64,
+            });
+          } catch (e: any) {
+            console.error("/rsvp failed:", e);
+            await postToInteractionWebhook({
+              token,
+              content: `❌ Failed to create session.\n${e?.message || "Check server logs."}`,
+              flags: 64,
+            });
+          }
+        })();
+
+        return NextResponse.json({ type: 5, data: { flags: 64 } });
+      }
+
+      return NextResponse.json({ type: 4, data: { content: "Unknown command.", flags: 64 } });
+    }
+
+    // 3) BUTTON CLICKS (RSVP)
+    if (body.type === 3) {
+      const customId = String(body.data?.custom_id || "");
+      if (!customId.startsWith("rsvp:")) return NextResponse.json({ type: 6 });
+
+      const [, sessionId, status] = customId.split(":");
+      const discordUserId = String(body.member?.user?.id || body.user?.id || "");
+      const token = String(body.token || "");
+
+      if (!sessionId || !discordUserId || !token || !["in", "maybe", "out"].includes(status)) {
+        return NextResponse.json({ type: 6 });
+      }
+
+      // Defer immediately, then update message in background
+      void (async () => {
+        try {
+          await supabaseAdmin.from("session_rsvps").upsert(
+            {
+              session_id: sessionId,
+              user_id: discordUserId,
+              status,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "session_id,user_id" }
+          );
+
+          await updatePostedSessionMessage({ sessionId });
+        } catch (e) {
+          console.error("RSVP background update failed:", e);
         }
       })();
 
-      return NextResponse.json({ type: 5, data: { flags: 64 } });
-    }
-
-    return NextResponse.json({ type: 4, data: { content: "Unknown command.", flags: 64 } });
-  }
-
-  // 3) BUTTON CLICKS (RSVP)
-  if (body.type === 3) {
-    const customId = String(body.data?.custom_id || "");
-    if (!customId.startsWith("rsvp:")) return NextResponse.json({ type: 6 });
-
-    const [, sessionId, status] = customId.split(":");
-    const discordUserId = String(body.member?.user?.id || body.user?.id || "");
-    const token = String(body.token || "");
-
-    if (!sessionId || !discordUserId || !token || !["in", "maybe", "out"].includes(status)) {
       return NextResponse.json({ type: 6 });
-      
     }
-
-    // Defer immediately, then update @original in background
-    void (async () => {
-      try {
-        await supabaseAdmin.from("session_rsvps").upsert(
-          {
-            session_id: sessionId,
-            user_id: discordUserId, // session_rsvps.user_id is Discord user id
-            status,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "session_id,user_id" }
-        );
-
-        await updatePostedSessionMessage({ sessionId });
-
-      } catch (e) {
-        console.error("RSVP background update failed:", e);
-      }
-    })();
 
     return NextResponse.json({ type: 6 });
-  }
-
-  return NextResponse.json({ type: 6 });
   } catch (e: any) {
     console.error("POST crashed:", e);
     return NextResponse.json({

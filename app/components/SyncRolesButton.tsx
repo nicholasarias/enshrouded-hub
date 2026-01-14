@@ -1,17 +1,32 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+
+function isSnowflake(id: string) {
+  return /^\d{10,25}$/.test(id);
+}
 
 export default function SyncRolesButton() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+
+  const guildId = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const sp = new URLSearchParams(window.location.search);
+    const g = String(sp.get("guildId") || "").trim();
+    return g && isSnowflake(g) ? g : null;
+  }, []);
 
   async function run() {
     setLoading(true);
     setMsg(null);
 
     try {
-      const res = await fetch("/api/discord/sync-roles", { method: "POST" });
+      const url = guildId
+        ? `/api/discord/sync-roles?guildId=${encodeURIComponent(guildId)}`
+        : "/api/discord/sync-roles";
+
+      const res = await fetch(url, { method: "POST" });
       const json = await res.json().catch(() => ({}));
 
       if (!res.ok) {
@@ -20,8 +35,8 @@ export default function SyncRolesButton() {
 
       const rolesCount =
         json?.rolesCount ??
-        json?.memberRoleCount ?? // older response
-        json?.memberRolesCount ?? // alternate naming
+        json?.memberRoleCount ??
+        json?.memberRolesCount ??
         0;
 
       const rolesEnabled =

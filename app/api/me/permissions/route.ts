@@ -5,7 +5,29 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-export async function GET() {
+function isSnowflake(id: string) {
+  return /^\d{10,25}$/.test(id);
+}
+
+function pickDiscordUserId(session: any): string | null {
+  const user = session?.user;
+  const candidates = [
+    user?.discord_user_id,
+    user?.discordUserId,
+    user?.discordId,
+    user?.providerAccountId,
+    session?.discordUserId,
+    session?.providerAccountId,
+  ];
+
+  for (const c of candidates) {
+    const v = String(c || "").trim();
+    if (isSnowflake(v)) return v;
+  }
+  return null;
+}
+
+export async function GET(req: Request) {
   const session = await auth();
   if (!session) {
     return NextResponse.json(
@@ -14,10 +36,19 @@ export async function GET() {
     );
   }
 
-  const guildId = process.env.NEXT_PUBLIC_DISCORD_GUILD_ID || "";
-  const discordUserId = (session as any).discordUserId as string | null;
+  const url = new URL(req.url);
 
-  if (!guildId || !discordUserId) {
+  // Multi guild ready: prefer query, fallback to env for backward compatibility
+  const guildId = String(
+    url.searchParams.get("guildId") ||
+      process.env.DISCORD_GUILD_ID ||
+      process.env.NEXT_PUBLIC_DISCORD_GUILD_ID ||
+      ""
+  ).trim();
+
+  const discordUserId = pickDiscordUserId(session);
+
+  if (!guildId || !isSnowflake(guildId) || !discordUserId) {
     return NextResponse.json(
       { isAuthed: true, isOfficer: false, rolesEnabled: false },
       { status: 200 }
@@ -28,7 +59,7 @@ export async function GET() {
     .from("profiles")
     .select("id")
     .eq("discord_user_id", discordUserId)
-    .single();
+    .maybeSingle();
 
   if (prof.error || !prof.data?.id) {
     return NextResponse.json(
@@ -43,12 +74,19 @@ export async function GET() {
     .eq("guild_id", guildId)
     .maybeSingle();
 
-  const officerRoleId = settings.data?.officer_role_id || null;
-  const rolesEnabled = !!settings.data?.roles_enabled;
-  const fallbackMode = settings.data?.fallback_officer_mode || "owner";
-  const ownerId = settings.data?.guild_owner_id || null;
+  if (settings.error) {
+    return NextResponse.json(
+      { isAuthed: true, isOfficer: false, rolesEnabled: false },
+      { status: 200 }
+    );
+  }
 
-  // If roles exist AND officer role is configured, use it
+  const officerRoleId = String(settings.data?.officer_role_id || "").trim() || null;
+  const rolesEnabled = !!settings.data?.roles_enabled;
+  const fallbackMode = String(settings.data?.fallback_officer_mode || "owner");
+  const ownerId = String(settings.data?.guild_owner_id || "").trim() || null;
+
+  // If roles exist and officer role is configured, use user_guild_roles
   if (rolesEnabled && officerRoleId) {
     const hasRole = await supabaseAdmin
       .from("user_guild_roles")
@@ -59,20 +97,19 @@ export async function GET() {
       .maybeSingle();
 
     return NextResponse.json(
-      { isAuthed: true, isOfficer: !!hasRole.data, rolesEnabled: true },
+      { isAuthed: true, isOfficer: !!hasRole.data, rolesEnabled: true, guildId },
       { status: 200 }
     );
   }
 
   // Otherwise fallback
   let isOfficer = false;
-
   if (fallbackMode === "owner" && ownerId && discordUserId === ownerId) {
     isOfficer = true;
   }
 
   return NextResponse.json(
-    { isAuthed: true, isOfficer, rolesEnabled: false },
+    { isAuthed: true, isOfficer, rolesEnabled: false, guildId },
     { status: 200 }
   );
 }

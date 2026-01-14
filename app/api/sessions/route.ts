@@ -1,295 +1,255 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { requireWriteAccess } from "@/lib/requireWriteAccess";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-type Session = {
-  id: string;
-  title: string;
-  startLocal: string;
-  durationMinutes: number;
-  notes: string;
-  createdAt: string;
-};
-
-// ===== Rate limiting (in-memory) =====
-const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 10; // 10 creates per minute per IP
-const rateMap = new Map<string, { count: number; windowStart: number }>();
-
-function getClientIp(req: Request) {
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0].trim();
-  return req.headers.get("x-real-ip") || "unknown";
-}
-
-function isRateLimited(req: Request) {
-  const ip = getClientIp(req);
-  const now = Date.now();
-
-  const entry = rateMap.get(ip);
-  if (!entry) {
-    rateMap.set(ip, { count: 1, windowStart: now });
-    return false;
-  }
-
-  if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateMap.set(ip, { count: 1, windowStart: now });
-    return false;
-  }
-
-  entry.count += 1;
-  rateMap.set(ip, entry);
-
-  return entry.count > RATE_LIMIT_MAX;
-}
-
-// ===== Helpers =====
-function validateGuildId(input: any): string | null {
-  const s = String(input || "").trim();
-  if (!/^\d{10,25}$/.test(s)) return null;
-  return s;
-}
-
-function sanitizeString(input: any, maxLen: number): string {
-  const s = typeof input === "string" ? input : input == null ? "" : String(input);
-  return s.trim().slice(0, maxLen);
-}
-
-function parsePositiveInt(input: any, fallback: number, max: number): number {
-  const n = Number.parseInt(String(input ?? ""), 10);
-  if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.min(n, max);
-}
-
-async function getChannelIdForGuild(guildId: string): Promise<string> {
-  const { data, error } = await supabaseAdmin
-    .from("discord_servers")
-    .select("channel_id")
-    .eq("guild_id", guildId)
-    .single();
-
-  if (error) throw new Error("No Discord channel configured. Run /setup first.");
-  const channelId = String((data as any)?.channel_id || "").trim();
-  if (!channelId) throw new Error("No Discord channel configured. Run /setup first.");
-  return channelId;
-}
-
-function toUnixSeconds(startLocal: string): number | null {
+function isUpcoming(startLocal: string) {
   const ms = Date.parse(startLocal);
-  if (!Number.isFinite(ms)) return null;
-  return Math.floor(ms / 1000);
+  if (!Number.isFinite(ms)) return true;
+  return ms >= Date.now() - 60 * 60 * 1000; // keep 1 hour past
 }
 
-function discordTimeTag(unix: number, style: "t" | "T" | "d" | "D" | "f" | "F" | "R") {
-  return `<t:${unix}:${style}>`;
+type Counts = { in: number; maybe: number; out: number };
+
+// ---------- Badge icons (match detail route) ----------
+function normalizeGroupKey(groupKey: string) {
+  let g = String(groupKey || "").toLowerCase().trim();
+  if (g.startsWith("logistics_")) g = g.slice("logistics_".length);
+  return g;
 }
 
-// ===== Routes =====
-export async function POST(req: Request) {
-  // Auth gate: valid API key OR logged-in officer
-  const gate = await requireWriteAccess(req);
-  if (!gate.ok) {
-    return NextResponse.json({ error: gate.error }, { status: gate.status });
-  }
+function groupIcon(groupKey: string) {
+  const g = normalizeGroupKey(groupKey);
 
-  // Rate limit
-  if (isRateLimited(req)) {
-    return NextResponse.json(
-      { error: "Rate limit exceeded. Try again in a minute." },
-      { status: 429 }
-    );
-  }
+  // Combat
+  if (g === "strength") return "🛡";
+  if (g === "intelligence") return "🧙";
+  if (g === "dexterity") return "🏹";
 
-  try {
-    const body = (await req.json()) as any;
+  // Logistics
+  if (g === "architect") return "🏗️";
+  if (g === "agronomist") return "🌾";
+  if (g === "quartermaster") return "📦";
+  if (g === "provisioner") return "🍲";
+  if (g === "excavator") return "⛏️";
 
-    const guildId = validateGuildId(body?.guildId);
-    if (!guildId) {
-      return NextResponse.json({ error: "Missing or invalid guildId" }, { status: 400 });
-    }
+  // fallback
+  if (g === "logistics") return "🧰";
+  return "❔";
+}
 
-    const title = sanitizeString(body?.title, 120);
-    const startLocal = sanitizeString(body?.startLocal, 40);
-    const notes = sanitizeString(body?.notes, 1500);
-    const durationMinutes = parsePositiveInt(body?.durationMinutes, 60, 24 * 60);
-
-    if (!title || !startLocal || !durationMinutes) {
-      return NextResponse.json(
-        { error: "Missing title, startLocal, or durationMinutes" },
-        { status: 400 }
-      );
-    }
-
-    // Resolve Discord channel from Supabase mapping
-    let channelId: string;
-    try {
-      channelId = await getChannelIdForGuild(guildId);
-    } catch (e: any) {
-      return NextResponse.json(
-        { error: e?.message || "Failed to find Discord channel for this server." },
-        { status: 400 }
-      );
-    }
-
-    const session: Session = {
-      id: crypto.randomUUID(),
-      title,
-      startLocal,
-      durationMinutes,
-      notes,
-      createdAt: new Date().toISOString(),
-    };
-
-    // Insert into Supabase
-    const { data: inserted, error: insertError } = await supabaseAdmin
-      .from("sessions")
-      .insert({
-        id: session.id,
-        guild_id: guildId,
-        title: session.title,
-        start_local: session.startLocal,
-        duration_minutes: session.durationMinutes,
-        notes: session.notes ?? "",
-      })
-      .select("*")
-      .single();
-
-    if (insertError) {
-      console.error("Supabase insert failed:", insertError);
-      return NextResponse.json({ error: "Failed to save session" }, { status: 500 });
-    }
-
-    // Post to Discord (best-effort)
-    const botToken = process.env.DISCORD_BOT_TOKEN;
-
-    if (botToken) {
-      try {
-        const discordRes = await fetch(
-          `https://discord.com/api/v10/channels/${channelId}/messages`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bot ${botToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              embeds: [
-                {
-                  title: `New Session: ${session.title}`,
-                  color: 0x2dd4bf,
-                  description: session.notes || "No notes.",
-                  timestamp: new Date().toISOString(),
-                  fields: [
-                    {
-                      name: "🕒 When",
-                      value: (() => {
-                        const unix = toUnixSeconds(session.startLocal);
-                        return unix
-                          ? `${discordTimeTag(unix, "F")} (${discordTimeTag(unix, "R")})`
-                          : session.startLocal;
-                      })(),
-                      inline: false,
-                    },
-                    {
-                      name: "⏱ Duration",
-                      value: `${session.durationMinutes} minutes`,
-                      inline: true,
-                    },
-                    {
-                      name: "📊 RSVPs",
-                      value: "**In:** 0  |  **Maybe:** 0  |  **Out:** 0",
-                      inline: false,
-                    },
-                  ],
-                  footer: { text: "Click a button to RSVP" },
-                },
-              ],
-              components: [
-                {
-                  type: 1,
-                  components: [
-                    { type: 2, style: 3, label: "In (0)", custom_id: `rsvp:${session.id}:in` },
-                    {
-                      type: 2,
-                      style: 1,
-                      label: "Maybe (0)",
-                      custom_id: `rsvp:${session.id}:maybe`,
-                    },
-                    { type: 2, style: 4, label: "Out (0)", custom_id: `rsvp:${session.id}:out` },
-                  ],
-                },
-              ],
-            }),
-          }
-        );
-
-        if (!discordRes.ok) {
-          const text = await discordRes.text();
-
-          await supabaseAdmin
-            .from("sessions")
-            .update({
-              discord_post_status: "failed",
-              discord_post_error: `HTTP ${discordRes.status}: ${text}`,
-            })
-            .eq("id", session.id);
-
-          console.error("Discord post failed:", discordRes.status, text);
-        } else {
-          const message = await discordRes.json();
-
-          await supabaseAdmin
-            .from("sessions")
-            .update({
-              discord_channel_id: channelId,
-              discord_message_id: message.id,
-              discord_post_status: "posted",
-              discord_post_error: null,
-            })
-            .eq("id", session.id);
-        }
-      } catch (e: any) {
-        await supabaseAdmin
-          .from("sessions")
-          .update({
-            discord_post_status: "failed",
-            discord_post_error: e?.message || "Unknown error",
-          })
-          .eq("id", session.id);
-
-        console.error("Discord post exception:", e);
-      }
-    }
-
-    return NextResponse.json({ session: inserted }, { status: 201 });
-  } catch (err) {
-    console.error("Create session failed:", err);
-    return NextResponse.json({ error: "Failed to create session" }, { status: 500 });
-  }
+function isCombatIcon(icon: string) {
+  return icon === "🛡" || icon === "🧙" || icon === "🏹";
 }
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const guildId = String(url.searchParams.get("guildId") || "");
+  const guildId = String(url.searchParams.get("guildId") || "").trim();
 
   if (!guildId) {
-    return NextResponse.json({ error: "Missing guildId query param" }, { status: 400 });
+    return NextResponse.json({ error: "Missing guildId" }, { status: 400 });
   }
 
+  const limit = Math.min(Number(url.searchParams.get("limit") || 50), 100);
+
+  // 1) Sessions
   const { data, error } = await supabaseAdmin
     .from("sessions")
-    .select("*")
+    .select(
+      "id,title,start_local,duration_minutes,notes,guild_id,discord_channel_id,discord_message_id,created_at"
+    )
     .eq("guild_id", guildId)
     .order("created_at", { ascending: false })
-    .limit(50);
+    .limit(limit);
 
   if (error) {
-    console.error("Supabase select failed:", error);
+    console.error("sessions list failed:", error);
     return NextResponse.json({ error: "Failed to load sessions" }, { status: 500 });
   }
 
-  return NextResponse.json({ sessions: data ?? [] });
+  const sessions = (data ?? []).map((s: any) => ({
+    id: String(s.id),
+    title: String(s.title ?? ""),
+    startLocal: String(s.start_local ?? ""),
+    durationMinutes: Number(s.duration_minutes ?? 0),
+    notes: String(s.notes ?? ""),
+    guildId: String(s.guild_id ?? ""),
+    discordChannelId: s.discord_channel_id ? String(s.discord_channel_id) : null,
+    discordMessageId: s.discord_message_id ? String(s.discord_message_id) : null,
+    createdAt: String(s.created_at ?? ""),
+    upcoming: isUpcoming(String(s.start_local ?? "")),
+  }));
+
+  // 2) RSVP counts and In roster ids in one pass
+  const ids = sessions.map((s) => s.id).filter(Boolean);
+
+  const countsBySession = new Map<string, Counts>();
+  const inIdsBySession = new Map<string, Set<string>>();
+  const allDiscordIds = new Set<string>();
+
+  for (const id of ids) {
+    countsBySession.set(id, { in: 0, maybe: 0, out: 0 });
+    inIdsBySession.set(id, new Set<string>());
+  }
+
+  if (ids.length) {
+    const { data: rsvps, error: rsvpErr } = await supabaseAdmin
+      .from("session_rsvps")
+      .select("session_id,user_id,status")
+      .in("session_id", ids);
+
+    if (rsvpErr) {
+      console.error("rsvp counts failed:", rsvpErr);
+    } else {
+      for (const row of rsvps ?? []) {
+        const sid = String((row as any)?.session_id || "").trim();
+        const did = String((row as any)?.user_id || "").trim();
+        const status = String((row as any)?.status || "").toLowerCase().trim();
+
+        if (!sid || !did) continue;
+
+        allDiscordIds.add(did);
+
+        const cur = countsBySession.get(sid);
+        if (!cur) continue;
+
+        if (status === "in") {
+          cur.in += 1;
+          const set = inIdsBySession.get(sid);
+          if (set) set.add(did);
+        } else if (status === "maybe") cur.maybe += 1;
+        else if (status === "out") cur.out += 1;
+
+        countsBySession.set(sid, cur);
+      }
+    }
+  }
+
+  // 3) profiles: discord_user_id -> profile id
+  const discordToProfile = new Map<string, { profileId: string; username: string }>();
+
+  const discordList = Array.from(allDiscordIds);
+  if (discordList.length) {
+    const { data: profs, error: profErr } = await supabaseAdmin
+      .from("profiles")
+      .select("id,discord_user_id,discord_username")
+      .in("discord_user_id", discordList);
+
+    if (profErr) {
+      console.error("profiles lookup failed:", profErr);
+    } else {
+      for (const p of profs ?? []) {
+        const did = String((p as any).discord_user_id || "").trim();
+        const pid = String((p as any).id || "").trim();
+        const uname = String((p as any).discord_username || "").trim();
+        if (!did || !pid) continue;
+        discordToProfile.set(did, { profileId: pid, username: uname || did });
+      }
+    }
+  }
+
+  const profileIds = Array.from(new Set(Array.from(discordToProfile.values()).map((x) => x.profileId)));
+
+  // 4) user_hub_roles: per profile selected role ids
+  const perProfile = new Map<string, { combatRoleId: string | null; logisticsRoleId: string | null }>();
+
+  if (profileIds.length) {
+    const { data: selections, error: selErr } = await supabaseAdmin
+      .from("user_hub_roles")
+      .select("user_id,role_kind,role_id")
+      .eq("guild_id", guildId)
+      .in("user_id", profileIds);
+
+    if (selErr) {
+      console.error("user_hub_roles lookup failed:", selErr);
+    } else {
+      for (const row of selections ?? []) {
+        const pid = String((row as any)?.user_id || "").trim();
+        const kind = String((row as any)?.role_kind || "").trim();
+        const rid = String((row as any)?.role_id || "").trim();
+        if (!pid || !rid) continue;
+
+        const cur = perProfile.get(pid) || { combatRoleId: null, logisticsRoleId: null };
+        if (kind === "combat") cur.combatRoleId = rid;
+        if (kind === "logistics") cur.logisticsRoleId = rid;
+        perProfile.set(pid, cur);
+      }
+    }
+  }
+
+  const roleIds = Array.from(
+    new Set(
+      Array.from(perProfile.values())
+        .flatMap((x) => [x.combatRoleId, x.logisticsRoleId])
+        .filter(Boolean) as string[]
+    )
+  );
+
+  // 5) guild_role_meta: role_id -> group_key
+  const roleIdToGroup = new Map<string, string>();
+
+  if (roleIds.length) {
+    const { data: meta, error: metaErr } = await supabaseAdmin
+      .from("guild_role_meta")
+      .select("role_id,group_key")
+      .eq("guild_id", guildId)
+      .in("role_id", roleIds);
+
+    if (metaErr) {
+      console.error("guild_role_meta lookup failed:", metaErr);
+    } else {
+      for (const m of meta ?? []) {
+        const rid = String((m as any)?.role_id || "").trim();
+        const gk = String((m as any)?.group_key || "").trim();
+        if (rid) roleIdToGroup.set(rid, gk);
+      }
+    }
+  }
+
+  // 6) compute missing badge counts for In roster per session
+  function badgesForDiscord(did: string) {
+    const prof = discordToProfile.get(did);
+    if (!prof) return { combat: "❔", logistics: "❔" };
+
+    const sel = perProfile.get(prof.profileId) || { combatRoleId: null, logisticsRoleId: null };
+
+    const combatGroup = sel.combatRoleId ? roleIdToGroup.get(sel.combatRoleId) : null;
+    const logiGroup = sel.logisticsRoleId ? roleIdToGroup.get(sel.logisticsRoleId) : null;
+
+    const combatIcon = combatGroup ? groupIcon(combatGroup) : "❔";
+    const logiIcon = logiGroup ? groupIcon(logiGroup) : "❔";
+
+    return {
+      combat: isCombatIcon(combatIcon) ? combatIcon : "❔",
+      logistics: logiIcon || "❔",
+    };
+  }
+
+  const missingCombatInBySession = new Map<string, number>();
+  const missingLogisticsInBySession = new Map<string, number>();
+
+  for (const sid of ids) {
+    const set = inIdsBySession.get(sid) || new Set<string>();
+    let mc = 0;
+    let ml = 0;
+
+    for (const did of set) {
+      const b = badgesForDiscord(did);
+      if (!String(b.combat || "").trim() || b.combat === "❔") mc += 1;
+      if (!String(b.logistics || "").trim() || b.logistics === "❔") ml += 1;
+    }
+
+    missingCombatInBySession.set(sid, mc);
+    missingLogisticsInBySession.set(sid, ml);
+  }
+
+  const sessionsWithCounts = sessions.map((s) => ({
+    ...s,
+    counts: countsBySession.get(s.id) || { in: 0, maybe: 0, out: 0 },
+    missingCombatIn: missingCombatInBySession.get(s.id) || 0,
+    missingLogisticsIn: missingLogisticsInBySession.get(s.id) || 0,
+  }));
+
+  return NextResponse.json({ sessions: sessionsWithCounts });
 }

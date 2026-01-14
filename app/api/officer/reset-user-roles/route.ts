@@ -2,8 +2,13 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const runtime = "nodejs";
+
+
 function isSnowflake(id: string) {
-  return /^\d{10,25}$/.test(id);
+  return /^\d{10,25}$/.test(String(id || "").trim());
 }
 
 function pickDiscordUserId(session: any): string | null {
@@ -24,49 +29,77 @@ function pickDiscordUserId(session: any): string | null {
   return null;
 }
 
-async function requireOfficer(params: { guildId: string; requesterDiscordId: string }) {
-  const { guildId, requesterDiscordId } = params;
+async function assertOfficerOrOwner(params: { guildId: string; sessionDiscordId: string }) {
+  const { guildId, sessionDiscordId } = params;
 
-  const { data: requesterProf } = await supabaseAdmin
+  const { data: prof, error: profErr } = await supabaseAdmin
     .from("profiles")
     .select("id")
-    .eq("discord_user_id", requesterDiscordId)
+    .eq("discord_user_id", sessionDiscordId)
     .maybeSingle();
 
-  const requesterProfileId = String((requesterProf as any)?.id || "");
-  if (!requesterProfileId) return { ok: false, error: "Requester profile not found" };
+  if (profErr) {
+    console.error("profiles lookup failed:", profErr);
+    return { ok: false as const, status: 500, error: "Failed to resolve officer profile" };
+  }
+  if (!prof?.id) {
+    return { ok: false as const, status: 401, error: "Profile not found. Sign out and sign in again." };
+  }
 
-  const { data: gs } = await supabaseAdmin
+  const officerUserId = String(prof.id);
+
+  const { data: gs, error: gsErr } = await supabaseAdmin
     .from("guild_settings")
-    .select("officer_role_id")
+    .select("officer_role_id, owner_discord_id")
     .eq("guild_id", guildId)
     .maybeSingle();
 
-  const officerRoleId = String((gs as any)?.officer_role_id || "").trim();
-  if (!officerRoleId) return { ok: false, error: "Officer role not configured" };
+  if (gsErr) {
+    console.error("guild_settings lookup failed:", gsErr);
+    return { ok: false as const, status: 500, error: "Failed to load guild settings" };
+  }
 
-  const { data: link } = await supabaseAdmin
+  const ownerDiscordId = String((gs as any)?.owner_discord_id || "").trim();
+  if (ownerDiscordId && ownerDiscordId === sessionDiscordId) {
+    return { ok: true as const, officerUserId };
+  }
+
+  const officerRoleId = String((gs as any)?.officer_role_id || "").trim();
+  if (!officerRoleId) {
+    return { ok: false as const, status: 403, error: "Officer role is not configured for this guild." };
+  }
+
+  const { data: link, error: linkErr } = await supabaseAdmin
     .from("user_guild_roles")
     .select("role_id")
     .eq("guild_id", guildId)
-    .eq("user_id", requesterProfileId)
+    .eq("user_id", officerUserId)
     .eq("role_id", officerRoleId)
     .maybeSingle();
 
-  if (!link) return { ok: false, error: "Forbidden" };
-  return { ok: true as const };
+  if (linkErr) {
+    console.error("user_guild_roles lookup failed:", linkErr);
+    return { ok: false as const, status: 500, error: "Failed to validate officer role" };
+  }
+
+  if (!link) {
+    return { ok: false as const, status: 403, error: "Forbidden: officer access required" };
+  }
+
+  return { ok: true as const, officerUserId };
 }
 
+/**
+ * POST /api/officer/reset-user-roles
+ * Body: { guildId: string, discordUserId: string }
+ *
+ * Deletes all hub role selections for the target user in this guild.
+ */
 export async function POST(req: Request) {
   const session = await auth();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const requesterDiscordId = pickDiscordUserId(session);
-  if (!requesterDiscordId) {
-    return NextResponse.json({ error: "Missing discord user id in session" }, { status: 401 });
-  }
-
-  let body: any;
+  let body: any = null;
   try {
     body = await req.json();
   } catch {
@@ -74,28 +107,41 @@ export async function POST(req: Request) {
   }
 
   const guildId = String(body?.guildId || "").trim();
-  const discordUserId = String(body?.discordUserId || "").trim();
+  const targetDiscordUserId = String(body?.discordUserId || "").trim();
 
   if (!guildId || !isSnowflake(guildId)) {
     return NextResponse.json({ error: "Missing or invalid guildId" }, { status: 400 });
   }
-  if (!discordUserId || !isSnowflake(discordUserId)) {
+  if (!targetDiscordUserId || !isSnowflake(targetDiscordUserId)) {
     return NextResponse.json({ error: "Missing or invalid discordUserId" }, { status: 400 });
   }
 
-  const gate = await requireOfficer({ guildId, requesterDiscordId });
-  if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: 403 });
+  const officerDiscordId = pickDiscordUserId(session);
+  if (!officerDiscordId) {
+    return NextResponse.json({ error: "Unauthorized: missing discord user id in session" }, { status: 401 });
+  }
 
-  const { data: targetProf } = await supabaseAdmin
+  const officerCheck = await assertOfficerOrOwner({ guildId, sessionDiscordId: officerDiscordId });
+  if (!officerCheck.ok) {
+    return NextResponse.json({ error: officerCheck.error }, { status: officerCheck.status });
+  }
+
+  // Resolve target profiles.id from discord_user_id
+  const { data: targetProf, error: targetErr } = await supabaseAdmin
     .from("profiles")
     .select("id")
-    .eq("discord_user_id", discordUserId)
+    .eq("discord_user_id", targetDiscordUserId)
     .maybeSingle();
 
-  const targetUserId = String((targetProf as any)?.id || "");
-  if (!targetUserId) {
+  if (targetErr) {
+    console.error("target profile lookup failed:", targetErr);
+    return NextResponse.json({ error: "Failed to resolve target profile" }, { status: 500 });
+  }
+  if (!targetProf?.id) {
     return NextResponse.json({ error: "Target profile not found" }, { status: 404 });
   }
+
+  const targetUserId = String(targetProf.id);
 
   const { error: delErr } = await supabaseAdmin
     .from("user_hub_roles")
@@ -103,7 +149,13 @@ export async function POST(req: Request) {
     .eq("guild_id", guildId)
     .eq("user_id", targetUserId);
 
-  if (delErr) return NextResponse.json({ error: "Failed to reset roles" }, { status: 500 });
+  if (delErr) {
+    console.error("user_hub_roles delete failed:", delErr);
+    return NextResponse.json({ error: "Failed to reset user hub roles" }, { status: 500 });
+  }
 
-  return NextResponse.json({ ok: true, guildId, discordUserId }, { status: 200 });
+  return NextResponse.json(
+    { ok: true, guildId, discordUserId: targetDiscordUserId, userId: targetUserId },
+    { status: 200 }
+  );
 }

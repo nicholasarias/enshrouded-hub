@@ -2,17 +2,24 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const runtime = "nodejs";
+
 function isSnowflake(id: string) {
-  return /^\d{10,25}$/.test(id);
+  return /^\d{10,25}$/.test(String(id || "").trim());
 }
 
 function pickDiscordUserId(session: any): string | null {
   const user = session?.user;
+
   const candidates = [
     user?.discord_user_id,
     user?.discordUserId,
     user?.discordId,
     user?.providerAccountId,
+    user?.id,
+    user?.sub,
     session?.discordUserId,
     session?.providerAccountId,
   ];
@@ -24,19 +31,23 @@ function pickDiscordUserId(session: any): string | null {
   return null;
 }
 
-export async function GET(req: Request) {
-  const session = await auth();
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+/**
+ * GET /api/me/is-officer?guildId=...
+ */
+export const GET = auth(async function GET(req) {
+  const session = (req as any).auth;
+  if (!session) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
   const url = new URL(req.url);
   const guildId = String(url.searchParams.get("guildId") || "").trim();
+
   if (!guildId || !isSnowflake(guildId)) {
-    return NextResponse.json({ error: "Missing or invalid guildId" }, { status: 400 });
+    return NextResponse.json({ ok: false, error: "Missing or invalid guildId" }, { status: 400 });
   }
 
   const discordUserId = pickDiscordUserId(session);
   if (!discordUserId) {
-    return NextResponse.json({ error: "Missing discord user id in session" }, { status: 401 });
+    return NextResponse.json({ ok: false, error: "Missing discord user id in session" }, { status: 401 });
   }
 
   const { data: prof, error: profErr } = await supabaseAdmin
@@ -45,8 +56,14 @@ export async function GET(req: Request) {
     .eq("discord_user_id", discordUserId)
     .maybeSingle();
 
-  if (profErr) return NextResponse.json({ error: "Profile lookup failed" }, { status: 500 });
-  if (!prof?.id) return NextResponse.json({ ok: true, guildId, isOfficer: false }, { status: 200 });
+  if (profErr) {
+    console.error("profiles lookup failed:", profErr);
+    return NextResponse.json({ ok: false, error: "Profile lookup failed" }, { status: 500 });
+  }
+
+  if (!prof?.id) {
+    return NextResponse.json({ ok: true, guildId, isOfficer: false }, { status: 200 });
+  }
 
   const { data: gs, error: gsErr } = await supabaseAdmin
     .from("guild_settings")
@@ -54,10 +71,15 @@ export async function GET(req: Request) {
     .eq("guild_id", guildId)
     .maybeSingle();
 
-  if (gsErr) return NextResponse.json({ error: "guild_settings lookup failed" }, { status: 500 });
+  if (gsErr) {
+    console.error("guild_settings lookup failed:", gsErr);
+    return NextResponse.json({ ok: false, error: "guild_settings lookup failed" }, { status: 500 });
+  }
 
   const officerRoleId = String((gs as any)?.officer_role_id || "").trim();
-  if (!officerRoleId) return NextResponse.json({ ok: true, guildId, isOfficer: false }, { status: 200 });
+  if (!officerRoleId || !isSnowflake(officerRoleId)) {
+    return NextResponse.json({ ok: true, guildId, isOfficer: false }, { status: 200 });
+  }
 
   const { data: link, error: linkErr } = await supabaseAdmin
     .from("user_guild_roles")
@@ -67,10 +89,10 @@ export async function GET(req: Request) {
     .eq("role_id", officerRoleId)
     .maybeSingle();
 
-  if (linkErr) return NextResponse.json({ error: "user_guild_roles lookup failed" }, { status: 500 });
+  if (linkErr) {
+    console.error("user_guild_roles lookup failed:", linkErr);
+    return NextResponse.json({ ok: false, error: "user_guild_roles lookup failed" }, { status: 500 });
+  }
 
-  return NextResponse.json(
-    { ok: true, guildId, isOfficer: Boolean(link) },
-    { status: 200 }
-  );
-}
+  return NextResponse.json({ ok: true, guildId, isOfficer: Boolean(link) }, { status: 200 });
+});
