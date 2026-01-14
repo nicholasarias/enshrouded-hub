@@ -25,15 +25,17 @@ function sanitizeString(input: any, maxLen: number): string | null {
   return trimmed.length ? trimmed : null;
 }
 
-export async function PUT(req: Request, ctx: { params: { id: string } }) {
+export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }) {
   // Write gate: valid API key OR logged-in officer
   const gate = await requireWriteAccess(req);
   if (!gate.ok) {
     return NextResponse.json({ error: gate.error }, { status: gate.status });
   }
 
-  const id = String(ctx.params?.id || "");
-  if (!isUuid(id)) {
+  const { id } = await ctx.params;
+  const idStr = String(id || "");
+
+  if (!isUuid(idStr)) {
     return NextResponse.json({ error: "Invalid gear id" }, { status: 400 });
   }
 
@@ -67,7 +69,7 @@ export async function PUT(req: Request, ctx: { params: { id: string } }) {
   const { data, error } = await supabaseAdmin
     .from("gear_items")
     .update(update)
-    .eq("id", id)
+    .eq("id", idStr)
     .select("*")
     .single();
 
@@ -79,19 +81,21 @@ export async function PUT(req: Request, ctx: { params: { id: string } }) {
   return NextResponse.json({ gear: data }, { status: 200 });
 }
 
-export async function DELETE(req: Request, ctx: { params: { id: string } }) {
+export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
   // Write gate: valid API key OR logged-in officer
   const gate = await requireWriteAccess(req);
   if (!gate.ok) {
     return NextResponse.json({ error: gate.error }, { status: gate.status });
   }
 
-  const id = String(ctx.params?.id || "");
-  if (!isUuid(id)) {
+  const { id } = await ctx.params;
+  const idStr = String(id || "");
+
+  if (!isUuid(idStr)) {
     return NextResponse.json({ error: "Invalid gear id" }, { status: 400 });
   }
 
-  const { error } = await supabaseAdmin.from("gear_items").delete().eq("id", id);
+  const { error } = await supabaseAdmin.from("gear_items").delete().eq("id", idStr);
 
   if (error) {
     console.error("gear_items delete failed:", error);
