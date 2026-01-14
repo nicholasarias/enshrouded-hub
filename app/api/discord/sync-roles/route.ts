@@ -55,9 +55,9 @@ function pickDiscordUserId(session: any): string | null {
   return null;
 }
 
-export async function POST() {
+export async function POST(req: Request) {
   // 1) Officer gate
-  const gate: any = await requireOfficer();
+  const gate: any = await requireOfficer(req);
   if (!gate?.ok) {
     return NextResponse.json(
       { ok: false, error: gate?.error || "Denied" },
