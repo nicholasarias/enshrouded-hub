@@ -139,8 +139,8 @@ function buildList(params: {
 
     for (const id of ids) {
       if (shownCount >= maxShown) break;
-      const p = badgeParts.get(id) || { combat: "❔", logistics: "❔" };
 
+      const p = badgeParts.get(id) || { combat: "❔", logistics: "❔" };
       const safeCombat = isCombatIcon(p.combat) ? p.combat : "❔";
       const safeLogi = p.logistics || "❔";
 
@@ -190,9 +190,7 @@ export function buildSessionEmbedPayload(params: {
   const outCount = outUsers.length;
 
   const whenUnix = toUnixSeconds(startLocal);
-  const whenText = whenUnix
-    ? `<t:${whenUnix}:f>  •  <t:${whenUnix}:R>`
-    : formatChicagoPretty(startLocal);
+  const whenText = whenUnix ? `<t:${whenUnix}:f>  •  <t:${whenUnix}:R>` : formatChicagoPretty(startLocal);
 
   const baseUrl = getBaseUrl();
   const hubUrl = `${baseUrl}/sessions/${encodeURIComponent(sessionId)}`;
@@ -205,20 +203,22 @@ export function buildSessionEmbedPayload(params: {
     showBadges: true,
   });
 
+  // FIX: show badges for Maybe too (so role icons show)
   const maybeList = buildList({
     discordIds: maybeUsers,
     badgeParts,
     maxShown: 10,
     maxChars: 900,
-    showBadges: false,
+    showBadges: true,
   });
 
+  // FIX: show badges for Out too (so role icons show)
   const outList = buildList({
     discordIds: outUsers,
     badgeParts,
     maxShown: 10,
     maxChars: 900,
-    showBadges: false,
+    showBadges: true,
   });
 
   const logisticsBreakdown = buildLogisticsBreakdown({
@@ -244,6 +244,7 @@ export function buildSessionEmbedPayload(params: {
     embeds: [
       {
         title: `🕯️ Session: ${title}`,
+        // Keep your big banner image
         image: {
           url: "https://cdn.discordapp.com/attachments/1391170867588894811/1460489545534406788/image.png",
         },

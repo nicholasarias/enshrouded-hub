@@ -98,6 +98,40 @@ function optionValue(body: any, name: string) {
 }
 
 // =======================================================
+// Discord avatar helpers (embed thumbnail)
+// =======================================================
+function discordAvatarUrlFromInteraction(body: any, size = 128) {
+  const user = body?.member?.user ?? body?.user;
+  const id = String(user?.id || "").trim();
+  const avatar = String(user?.avatar || "").trim();
+
+  if (id && avatar) {
+    const ext = avatar.startsWith("a_") ? "gif" : "png";
+    return `https://cdn.discordapp.com/avatars/${id}/${avatar}.${ext}?size=${size}`;
+  }
+
+  const disc = Number(user?.discriminator || 0);
+  const index = Number.isFinite(disc) ? disc % 5 : 0;
+  return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
+}
+
+function attachThumbnailToFirstEmbed(payload: any, thumbnailUrl: string) {
+  if (!thumbnailUrl) return payload;
+
+  const target = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  const embeds = target?.embeds;
+
+  if (Array.isArray(embeds) && embeds.length > 0) {
+    embeds[0] = {
+      ...embeds[0],
+      thumbnail: { url: thumbnailUrl },
+    };
+  }
+
+  return payload;
+}
+
+// =======================================================
 // Icons + helpers
 // =======================================================
 function normalizeGroupKey(groupKey: string) {
@@ -420,7 +454,6 @@ async function postToInteractionWebhook(params: { token: string; content: string
   return text;
 }
 
-
 async function postChannelMessageAsBot(params: { channelId: string; payload: any }) {
   const botToken = process.env.DISCORD_BOT_TOKEN;
   if (!botToken) throw new Error("DISCORD_BOT_TOKEN missing on server.");
@@ -597,7 +630,7 @@ export async function POST(req: Request) {
         return ack;
       }
 
-            // /setup (RUN INLINE ON VERCEL, NO BACKGROUND ASYNC)
+      // /setup (RUN INLINE ON VERCEL, NO BACKGROUND ASYNC)
       if (commandName === "setup") {
         const supabaseAdmin = await getSupabaseAdmin();
 
@@ -683,8 +716,7 @@ export async function POST(req: Request) {
         });
       }
 
-
-            // /rsvp (RUN INLINE ON VERCEL, NO BACKGROUND ASYNC)
+      // /rsvp (RUN INLINE ON VERCEL, NO BACKGROUND ASYNC)
       if (commandName === "rsvp") {
         const supabaseAdmin = await getSupabaseAdmin();
         const { buildSessionEmbedPayload } = await getEmbedBuilder();
@@ -789,6 +821,10 @@ export async function POST(req: Request) {
           badgeParts,
         });
 
+        // Ensure a visible picture on Discord via embed thumbnail
+        const thumb = discordAvatarUrlFromInteraction(body);
+        attachThumbnailToFirstEmbed(payload, thumb);
+
         // 4) Post to channel as bot
         let postedMessageId = "";
         try {
@@ -838,109 +874,110 @@ export async function POST(req: Request) {
         });
       }
 
-
       void postToInteractionWebhook({ token, content: "Unknown command.", flags: 64 });
       return ack;
     }
 
     // 3) BUTTON CLICKS (INLINE on Vercel, return UPDATE_MESSAGE)
-if (body.type === 3) {
-  try {
-    const supabaseAdmin = await getSupabaseAdmin();
-    const { buildSessionEmbedPayload } = await getEmbedBuilder();
+    if (body.type === 3) {
+      try {
+        const supabaseAdmin = await getSupabaseAdmin();
+        const { buildSessionEmbedPayload } = await getEmbedBuilder();
 
-    const customId = String(body.data?.custom_id || "");
-    if (!customId.startsWith("rsvp:")) return NextResponse.json({ type: 6 });
+        const customId = String(body.data?.custom_id || "");
+        if (!customId.startsWith("rsvp:")) return NextResponse.json({ type: 6 });
 
-    const [, sessionId, status] = customId.split(":");
-    const discordUserId = String(body.member?.user?.id || body.user?.id || "");
+        const [, sessionId, status] = customId.split(":");
+        const discordUserId = String(body.member?.user?.id || body.user?.id || "");
 
-    if (!sessionId || !discordUserId || !["in", "maybe", "out"].includes(status)) {
-      return NextResponse.json({ type: 6 });
+        if (!sessionId || !discordUserId || !["in", "maybe", "out"].includes(status)) {
+          return NextResponse.json({ type: 6 });
+        }
+
+        // 1) Save RSVP
+        const { error: upErr } = await supabaseAdmin.from("session_rsvps").upsert(
+          {
+            session_id: sessionId,
+            user_id: discordUserId,
+            status,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "session_id,user_id" }
+        );
+
+        if (upErr) {
+          console.error("RSVP upsert failed:", upErr);
+          return NextResponse.json({ type: 6 });
+        }
+
+        // 2) Load session + RSVPs to rebuild embed
+        const { data: session, error: sessionErr } = await supabaseAdmin
+          .from("sessions")
+          .select("title,start_local,duration_minutes,notes,guild_id")
+          .eq("id", sessionId)
+          .single();
+
+        if (sessionErr || !session) {
+          console.error("Session lookup failed:", sessionErr);
+          return NextResponse.json({ type: 6 });
+        }
+
+        const { data: rsvps, error: rsvpsErr } = await supabaseAdmin
+          .from("session_rsvps")
+          .select("status,user_id")
+          .eq("session_id", sessionId);
+
+        if (rsvpsErr) {
+          console.error("RSVP load failed:", rsvpsErr);
+          return NextResponse.json({ type: 6 });
+        }
+
+        const inUsers: string[] = [];
+        const maybeUsers: string[] = [];
+        const outUsers: string[] = [];
+
+        for (const r of rsvps ?? []) {
+          const s = String((r as any).status || "");
+          const did = String((r as any).user_id || "");
+          if (!did) continue;
+          if (s === "in") inUsers.push(did);
+          if (s === "maybe") maybeUsers.push(did);
+          if (s === "out") outUsers.push(did);
+        }
+
+        const guildId = String((session as any).guild_id || "");
+        const allIds = Array.from(new Set([...inUsers, ...maybeUsers, ...outUsers]));
+        const badgeParts = guildId
+          ? await loadUserBadgePartsForDiscordIds({ guildId, discordIds: allIds })
+          : new Map<string, BadgeParts>();
+
+        const payload = buildSessionEmbedPayload({
+          sessionId,
+          title: String((session as any).title),
+          startLocal: String((session as any).start_local),
+          durationMinutes: Number((session as any).duration_minutes),
+          notes: String((session as any).notes || ""),
+          guildId,
+          inUsers,
+          maybeUsers,
+          outUsers,
+          badgeParts,
+        });
+
+        // Ensure a visible picture on Discord via embed thumbnail
+        const thumb = discordAvatarUrlFromInteraction(body);
+        attachThumbnailToFirstEmbed(payload, thumb);
+
+        // 3) Update the message directly as the interaction response
+        return NextResponse.json({
+          type: 7,
+          data: (payload as any)?.data ? (payload as any).data : payload,
+        });
+      } catch (e) {
+        console.error("Button handler crashed:", e);
+        return NextResponse.json({ type: 6 });
+      }
     }
-
-    // 1) Save RSVP
-    const { error: upErr } = await supabaseAdmin.from("session_rsvps").upsert(
-      {
-        session_id: sessionId,
-        user_id: discordUserId,
-        status,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "session_id,user_id" }
-    );
-
-    if (upErr) {
-      console.error("RSVP upsert failed:", upErr);
-      return NextResponse.json({ type: 6 });
-    }
-
-    // 2) Load session + RSVPs to rebuild embed
-    const { data: session, error: sessionErr } = await supabaseAdmin
-      .from("sessions")
-      .select("title,start_local,duration_minutes,notes,guild_id")
-      .eq("id", sessionId)
-      .single();
-
-    if (sessionErr || !session) {
-      console.error("Session lookup failed:", sessionErr);
-      return NextResponse.json({ type: 6 });
-    }
-
-    const { data: rsvps, error: rsvpsErr } = await supabaseAdmin
-      .from("session_rsvps")
-      .select("status,user_id")
-      .eq("session_id", sessionId);
-
-    if (rsvpsErr) {
-      console.error("RSVP load failed:", rsvpsErr);
-      return NextResponse.json({ type: 6 });
-    }
-
-    const inUsers: string[] = [];
-    const maybeUsers: string[] = [];
-    const outUsers: string[] = [];
-
-    for (const r of rsvps ?? []) {
-      const s = String((r as any).status || "");
-      const did = String((r as any).user_id || "");
-      if (!did) continue;
-      if (s === "in") inUsers.push(did);
-      if (s === "maybe") maybeUsers.push(did);
-      if (s === "out") outUsers.push(did);
-    }
-
-    const guildId = String((session as any).guild_id || "");
-    const allIds = Array.from(new Set([...inUsers, ...maybeUsers, ...outUsers]));
-    const badgeParts = guildId
-      ? await loadUserBadgePartsForDiscordIds({ guildId, discordIds: allIds })
-      : new Map<string, BadgeParts>();
-
-    const payload = buildSessionEmbedPayload({
-      sessionId,
-      title: String((session as any).title),
-      startLocal: String((session as any).start_local),
-      durationMinutes: Number((session as any).duration_minutes),
-      notes: String((session as any).notes || ""),
-      guildId,
-      inUsers,
-      maybeUsers,
-      outUsers,
-      badgeParts,
-    });
-
-    // 3) Update the message directly as the interaction response
-    return NextResponse.json({
-  type: 7,
-  data: (payload as any)?.data ? (payload as any).data : payload,
-});
-
-  } catch (e) {
-    console.error("Button handler crashed:", e);
-    return NextResponse.json({ type: 6 });
-  }
-}
-
 
     return NextResponse.json({ type: 6 });
   } catch (e: any) {
