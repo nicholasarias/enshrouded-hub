@@ -61,7 +61,8 @@ export default function TopBar(props: {
     };
   };
 
-  const dashboardHref = buildUrl("/", { guildId });
+  // FIX: dashboard is /dashboard, not /
+  const dashboardHref = buildUrl("/dashboard", { guildId });
   const rolesHref = buildUrl("/roles", { guildId });
   const sessionsHref = buildUrl("/sessions", { guildId });
 
@@ -111,21 +112,11 @@ export default function TopBar(props: {
             >
               Ember Hub
             </div>
-            <div style={{ color: THEME.textAsh, fontSize: 12 }}>
-              {props.subtitle}
-            </div>
+            <div style={{ color: THEME.textAsh, fontSize: 12 }}>{props.subtitle}</div>
           </div>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flexWrap: "wrap",
-            justifyContent: "end",
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "end" }}>
           <a href={rolesHref} style={linkStyle(props.current === "roles")}>
             Roles
           </a>
@@ -134,7 +125,7 @@ export default function TopBar(props: {
             Sessions
           </a>
 
-          <a href={dashboardHref} style={linkStyle(false, true)}>
+          <a href={dashboardHref} style={linkStyle(props.current === "dashboard", true)}>
             Dashboard
           </a>
 
@@ -142,12 +133,7 @@ export default function TopBar(props: {
         </div>
       </div>
 
-      <div
-        style={{
-          height: 1,
-          background: `linear-gradient(90deg, transparent, ${THEME.flameAmber}, transparent)`,
-        }}
-      />
+      <div style={{ height: 1, background: `linear-gradient(90deg, transparent, ${THEME.flameAmber}, transparent)` }} />
     </div>
   );
 }

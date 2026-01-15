@@ -1,9 +1,10 @@
-import Link from "next/link";
 import type { CSSProperties } from "react";
+import { headers } from "next/headers";
 
 import AuthButton from "@/app/components/AuthButton";
 import SyncRolesButton from "@/app/components/SyncRolesButton";
 import OfficerOnly from "@/app/components/OfficerOnly";
+import TopBar from "@/app/components/TopBar";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -21,17 +22,6 @@ const THEME = {
   textAsh: "#6b7280",
 };
 
-// Matches your sessions helper pattern
-function getBaseUrl() {
-  const fromEnv =
-    process.env.NEXT_PUBLIC_BASE_URL ||
-    process.env.VERCEL_URL ||
-    process.env.NEXT_PUBLIC_VERCEL_URL;
-
-  if (fromEnv) return fromEnv.startsWith("http") ? fromEnv : `https://${fromEnv}`;
-  return "http://localhost:3000";
-}
-
 function isSnowflake(id: string) {
   return /^\d{10,25}$/.test(id);
 }
@@ -41,24 +31,10 @@ function getGuildId(sp: Record<string, string | string[] | undefined>) {
   const fromUrl = String(raw || "").trim();
   if (fromUrl && isSnowflake(fromUrl)) return fromUrl;
 
-  const fromEnv = String(
-    process.env.NEXT_PUBLIC_DISCORD_GUILD_ID ||
-      process.env.DISCORD_GUILD_ID ||
-      ""
-  ).trim();
-
+  const fromEnv = String(process.env.NEXT_PUBLIC_DISCORD_GUILD_ID || process.env.DISCORD_GUILD_ID || "").trim();
   if (fromEnv && isSnowflake(fromEnv)) return fromEnv;
 
   return "";
-}
-
-function buildUrl(path: string, params: Record<string, string>) {
-  const u = new URL(path, "http://local");
-  for (const [k, v] of Object.entries(params)) {
-    if (v) u.searchParams.set(k, v);
-  }
-  const qs = u.searchParams.toString();
-  return qs ? `${path}?${qs}` : path;
 }
 
 function fmtWhen(startLocal: string) {
@@ -75,15 +51,37 @@ type SessionItem = {
   upcoming: boolean;
 };
 
+async function getOriginFromRequestHeaders() {
+  try {
+    const h = await headers();
+    const host = h.get("x-forwarded-host") || h.get("host") || "";
+    const proto = h.get("x-forwarded-proto") || "https";
+    if (host) return `${proto}://${host}`;
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+async function getCookieHeader() {
+  try {
+    const h = await headers();
+    return String(h.get("cookie") || "");
+  } catch {
+    return "";
+  }
+}
+
 async function getNextUpcomingSession(guildId: string) {
   if (!guildId) return null;
 
-  const baseUrl = getBaseUrl();
-  const res = await fetch(
-    `${baseUrl}/api/sessions/list?guildId=${encodeURIComponent(guildId)}&limit=50`,
-    { cache: "no-store" }
-  );
+  const origin = await getOriginFromRequestHeaders();
+  const base = origin || (process.env.NEXT_PUBLIC_BASE_URL ? String(process.env.NEXT_PUBLIC_BASE_URL) : "");
+  const url = base
+    ? `${base}/api/sessions/list?guildId=${encodeURIComponent(guildId)}&limit=50`
+    : `/api/sessions/list?guildId=${encodeURIComponent(guildId)}&limit=50`;
 
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) return null;
 
   const json = (await res.json()) as { sessions?: any[] };
@@ -113,155 +111,28 @@ async function getNextUpcomingSession(guildId: string) {
 async function getRoleSelectionStatus(guildId: string) {
   if (!guildId) return { combat: false, logistics: false };
 
-  const baseUrl = getBaseUrl();
-  const res = await fetch(
-    `${baseUrl}/api/me/selected-roles?guildId=${encodeURIComponent(guildId)}`,
-    { cache: "no-store" }
-  );
+  const origin = await getOriginFromRequestHeaders();
+  const cookie = await getCookieHeader();
+
+  const base = origin || (process.env.NEXT_PUBLIC_BASE_URL ? String(process.env.NEXT_PUBLIC_BASE_URL) : "");
+  const url = base
+    ? `${base}/api/me/selected-roles?guildId=${encodeURIComponent(guildId)}`
+    : `/api/me/selected-roles?guildId=${encodeURIComponent(guildId)}`;
+
+  // IMPORTANT: forward cookies so the API can identify the logged-in user
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: cookie ? { cookie } : undefined,
+  });
 
   if (!res.ok) return { combat: false, logistics: false };
 
-  const json = (await res.json()) as {
-    combatRoleId?: string | null;
-    logisticsRoleId?: string | null;
-  };
+  const json = (await res.json()) as { combatRoleId?: string | null; logisticsRoleId?: string | null };
 
   return {
     combat: Boolean(String(json?.combatRoleId || "").trim()),
     logistics: Boolean(String(json?.logisticsRoleId || "").trim()),
   };
-}
-
-function TopBar(props: { guildId: string }) {
-  const gid = props.guildId;
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        zIndex: 60,
-        background: `linear-gradient(180deg, ${THEME.stoneCard}, #0b0d11)`,
-        borderBottom: `1px solid ${THEME.stoneBorder}`,
-        boxShadow: "0 12px 30px rgba(0,0,0,0.55)",
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 1100,
-          margin: "0 auto",
-          padding: "12px 16px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div
-            style={{
-              width: 10,
-              height: 10,
-              borderRadius: 999,
-              background: THEME.flameAmber,
-              boxShadow: `0 0 14px rgba(242, 153, 74, 0.5)`,
-            }}
-          />
-          <div style={{ display: "grid", lineHeight: 1.05 }}>
-            <div
-              style={{
-                color: "#fff",
-                fontWeight: 950,
-                letterSpacing: 1.5,
-                textTransform: "uppercase",
-                fontSize: 12,
-              }}
-            >
-              Enshrouded Hub
-            </div>
-            <div style={{ color: THEME.textAsh, fontSize: 12 }}>
-              Command Console
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "end" }}>
-          <a
-            href={buildUrl("/dashboard", { guildId: gid })}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 999,
-              border: `1px solid ${THEME.stoneBorder}`,
-              background: `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})`,
-              color: "#111",
-              textDecoration: "none",
-              fontWeight: 950,
-              letterSpacing: 1,
-              textTransform: "uppercase",
-              fontSize: 12,
-              boxShadow: `0 0 18px rgba(242, 153, 74, 0.25)`,
-              whiteSpace: "nowrap",
-            }}
-          >
-            Dashboard
-          </a>
-
-          <a
-            href={buildUrl("/roles", { guildId: gid })}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 999,
-              border: `1px solid ${THEME.stoneBorder}`,
-              background: "rgba(12,14,18,0.6)",
-              color: THEME.textSilver,
-              textDecoration: "none",
-              fontWeight: 950,
-              letterSpacing: 1,
-              textTransform: "uppercase",
-              fontSize: 12,
-              backdropFilter: "blur(6px)",
-              whiteSpace: "nowrap",
-            }}
-          >
-            Roles
-          </a>
-
-          <a
-            href={buildUrl("/sessions", { guildId: gid })}
-            style={{
-              padding: "10px 12px",
-              borderRadius: 999,
-              border: `1px solid ${THEME.stoneBorder}`,
-              background: "rgba(12,14,18,0.6)",
-              color: THEME.textSilver,
-              textDecoration: "none",
-              fontWeight: 950,
-              letterSpacing: 1,
-              textTransform: "uppercase",
-              fontSize: 12,
-              backdropFilter: "blur(6px)",
-              whiteSpace: "nowrap",
-            }}
-          >
-            Sessions
-          </a>
-
-          <div style={{ marginLeft: 4 }}>
-            <AuthButton />
-          </div>
-        </div>
-      </div>
-
-      <div
-        style={{
-          height: 1,
-          background: `linear-gradient(90deg, transparent, ${THEME.flameAmber}, transparent)`,
-        }}
-      />
-    </div>
-  );
 }
 
 function ShroudFog() {
@@ -277,33 +148,12 @@ function ShroudFog() {
     filter: "blur(100px)",
     opacity: 0.85,
     willChange: "transform, opacity",
-    maskImage: `linear-gradient(
-      to bottom,
-      transparent 0%,
-      black 15%,
-      black 85%,
-      transparent 100%
-    )`,
-    WebkitMaskImage: `linear-gradient(
-      to bottom,
-      transparent 0%,
-      black 15%,
-      black 85%,
-      transparent 100%
-    )`,
+    maskImage: `linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)`,
+    WebkitMaskImage: `linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)`,
   };
 
   return (
-    <div
-      aria-hidden="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 1,
-        pointerEvents: "none",
-        overflow: "hidden",
-      }}
-    >
+    <div aria-hidden="true" style={{ position: "fixed", inset: 0, zIndex: 1, pointerEvents: "none", overflow: "hidden" }}>
       <div
         style={{
           ...blobStyleBase,
@@ -348,59 +198,22 @@ function ShroudFog() {
           right: "-10%",
           bottom: "-35%",
           height: "70%",
-          background: `radial-gradient(
-            ellipse at bottom,
-            ${THEME.shroudMist} 0%,
-            #1a2430cc 40%,
-            transparent 80%
-          )`,
+          background: `radial-gradient(ellipse at bottom, ${THEME.shroudMist} 0%, #1a2430cc 40%, transparent 80%)`,
           filter: "blur(12px)",
           opacity: 0.95,
-          maskImage: `linear-gradient(
-            to bottom,
-            transparent 0%,
-            black 15%,
-            black 85%,
-            transparent 100%
-          )`,
-          WebkitMaskImage: `linear-gradient(
-            to bottom,
-            transparent 0%,
-            black 15%,
-            black 85%,
-            transparent 100%
-          )`,
+          maskImage: `linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)`,
+          WebkitMaskImage: `linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)`,
         }}
       />
 
       <div
         style={{
           position: "absolute",
-          left: 0,
-          right: 0,
-          bottom: 0,
-          top: 0,
-          background: `linear-gradient(
-            to top,
-            ${THEME.shroudMist} 0%,
-            #1a2430ee 45%,
-            transparent 100%
-          )`,
+          inset: 0,
+          background: `linear-gradient(to top, ${THEME.shroudMist} 0%, #1a2430ee 45%, transparent 100%)`,
           opacity: 0.35,
-          maskImage: `linear-gradient(
-            to bottom,
-            transparent 0%,
-            black 15%,
-            black 85%,
-            transparent 100%
-          )`,
-          WebkitMaskImage: `linear-gradient(
-            to bottom,
-            transparent 0%,
-            black 15%,
-            black 85%,
-            transparent 100%
-          )`,
+          maskImage: `linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)`,
+          WebkitMaskImage: `linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)`,
         }}
       />
 
@@ -421,9 +234,7 @@ function StoneCard(props: { children: React.ReactNode; active?: boolean }) {
   return (
     <div
       style={{
-        background: props.active
-          ? `linear-gradient(180deg, ${THEME.stoneCard}, #0f1218)`
-          : "rgba(0,0,0,0.30)",
+        background: props.active ? `linear-gradient(180deg, ${THEME.stoneCard}, #0f1218)` : "rgba(0,0,0,0.30)",
         border: `2px solid ${THEME.stoneBorder}`,
         borderRadius: 6,
         padding: 20,
@@ -431,15 +242,7 @@ function StoneCard(props: { children: React.ReactNode; active?: boolean }) {
         position: "relative",
       }}
     >
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          borderRadius: 6,
-          boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.55)",
-          pointerEvents: "none",
-        }}
-      />
+      <div style={{ position: "absolute", inset: 0, borderRadius: 6, boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.55)", pointerEvents: "none" }} />
       <div style={{ position: "relative" }}>{props.children}</div>
     </div>
   );
@@ -474,22 +277,18 @@ export default async function DashboardPage(props: {
   let sp: Record<string, string | string[] | undefined> = {};
   const spRaw = props.searchParams as any;
 
-  if (spRaw && typeof spRaw.then === "function") {
-    sp = (await spRaw) as Record<string, string | string[] | undefined>;
-  } else {
-    sp = (spRaw || {}) as Record<string, string | string[] | undefined>;
-  }
+  if (spRaw && typeof spRaw.then === "function") sp = (await spRaw) as any;
+  else sp = (spRaw || {}) as any;
 
   const guildId = getGuildId(sp);
 
   const nextSession = await getNextUpcomingSession(guildId);
   const roles = await getRoleSelectionStatus(guildId);
-
   const rolesConfigured = roles.combat || roles.logistics;
 
-  const rolesUrl = buildUrl("/roles", { guildId });
-  const sessionsUrl = buildUrl("/sessions", { guildId });
-  const dashboardUrl = buildUrl("/dashboard", { guildId });
+  const rolesUrl = `/roles?guildId=${encodeURIComponent(guildId)}`;
+  const sessionsUrl = `/sessions?guildId=${encodeURIComponent(guildId)}`;
+  const dashboardUrl = `/dashboard?guildId=${encodeURIComponent(guildId)}`;
 
   return (
     <div
@@ -503,7 +302,18 @@ export default async function DashboardPage(props: {
         position: "relative",
       }}
     >
-      <TopBar guildId={guildId} />
+      <TopBar
+        subtitle="Command console"
+        guildId={guildId}
+        current="dashboard"
+        right={
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "end" }}>
+            <SyncRolesButton />
+            <AuthButton />
+          </div>
+        }
+      />
+
       <ShroudFog />
 
       <div
@@ -512,14 +322,12 @@ export default async function DashboardPage(props: {
           position: "fixed",
           inset: 0,
           pointerEvents: "none",
-          background:
-            "radial-gradient(circle at center, rgba(0,0,0,0) 0%, rgba(0,0,0,0.55) 70%, rgba(0,0,0,0.85) 100%)",
+          background: "radial-gradient(circle at center, rgba(0,0,0,0) 0%, rgba(0,0,0,0.55) 70%, rgba(0,0,0,0.85) 100%)",
           zIndex: 0,
         }}
       />
 
       <div style={{ maxWidth: 1100, margin: "0 auto", position: "relative", zIndex: 10 }}>
-        {/* Hero */}
         <StoneCard active>
           <div
             style={{
@@ -534,27 +342,15 @@ export default async function DashboardPage(props: {
             }}
           >
             <div>
-              <div
-                style={{
-                  color: THEME.flameGold,
-                  textTransform: "uppercase",
-                  letterSpacing: 3,
-                  fontSize: 12,
-                  fontWeight: 950,
-                }}
-              >
+              <div style={{ color: THEME.flameGold, textTransform: "uppercase", letterSpacing: 3, fontSize: 12, fontWeight: 950 }}>
                 Dashboard
               </div>
               <div style={{ marginTop: 8, fontSize: "2rem", fontWeight: 950, letterSpacing: 0.4, color: "#fff" }}>
                 Flameborn Command Console
               </div>
               <div style={{ marginTop: 8, maxWidth: 760, color: THEME.textAsh, fontSize: 14, lineHeight: 1.45 }}>
-                Manage your guild state, upcoming activity, and access core tools. Only verified features are currently online.
+                Manage your guild state, upcoming activity, and access core tools.
               </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "end" }}>
-              <SyncRolesButton />
             </div>
           </div>
 
@@ -576,9 +372,7 @@ export default async function DashboardPage(props: {
                 <div style={{ fontWeight: 950, color: "#fff", letterSpacing: 0.5, textTransform: "uppercase", fontSize: 12 }}>
                   Officer tools
                 </div>
-                <div style={{ marginTop: 4, color: THEME.textAsh, fontSize: 12 }}>
-                  Visible only to officers or the server owner.
-                </div>
+                <div style={{ marginTop: 4, color: THEME.textAsh, fontSize: 12 }}>Visible only to officers or the server owner.</div>
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "end" }}>
@@ -601,379 +395,128 @@ export default async function DashboardPage(props: {
                 >
                   Post session
                 </a>
-
-                <span
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    border: `1px solid ${THEME.stoneBorder}`,
-                    background: "rgba(12,14,18,0.6)",
-                    color: THEME.textAsh,
-                    fontWeight: 950,
-                    letterSpacing: 1,
-                    textTransform: "uppercase",
-                    fontSize: 12,
-                    opacity: 0.7,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  Roster soon
-                </span>
               </div>
             </div>
           </OfficerOnly>
         </StoneCard>
 
-        {/* Main grid */}
-        <div style={{ display: "grid", gap: 16, marginTop: 16, gridTemplateColumns: "repeat(12, 1fr)" }}>
+        <div style={{ display: "grid", gap: 16, marginTop: 16 }}>
           {/* Next Session */}
-          <div style={{ gridColumn: "span 12" as any }}>
-            <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }}>
-              <div style={{ gridColumn: "span 12" as any }} />
+          <StoneCard active>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 950, color: "#fff", letterSpacing: 1, textTransform: "uppercase" }}>Next Session</div>
 
-              <div style={{ gridColumn: "span 12" as any, display: "grid", gap: 16 }}>
-                <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }}>
-                  <div style={{ gridColumn: "span 12" as any, display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }}>
-                    <div style={{ gridColumn: "span 12" as any, display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }}>
-                      <div style={{ gridColumn: "span 12" as any, display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }} />
+                {nextSession ? (
+                  <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                    <div style={{ fontSize: 16, fontWeight: 950, color: THEME.textSilver }}>{nextSession.title || "Untitled"}</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <Pill active>🕒 {fmtWhen(nextSession.startLocal)}</Pill>
+                      <Pill active>⏱ {Number(nextSession.durationMinutes || 0)} min</Pill>
+                      <Pill active>🔥 Scheduled</Pill>
                     </div>
                   </div>
-                </div>
-
-                <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }}>
-                  <div style={{ gridColumn: "span 12" as any, display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }}>
-                    <div style={{ gridColumn: "span 12" as any, display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }} />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Real 3 column layout, responsive without Tailwind */}
-          <div style={{ gridColumn: "span 12" as any }}>
-            <div
-              style={{
-                display: "grid",
-                gap: 16,
-                gridTemplateColumns: "repeat(12, 1fr)",
-              }}
-            >
-              <div style={{ gridColumn: "span 12" as any }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 16,
-                    gridTemplateColumns: "repeat(12, 1fr)",
-                  }}
-                >
-                  <div style={{ gridColumn: "span 12" as any, display: "grid", gap: 16, gridTemplateColumns: "repeat(12, 1fr)" }}>
-                    <div style={{ gridColumn: "span 12" as any }} />
-                  </div>
-                </div>
+                ) : (
+                  <div style={{ marginTop: 10, color: THEME.textAsh, fontWeight: 900 }}>No session currently scheduled.</div>
+                )}
               </div>
 
-              {/* Card 1 */}
-              <div style={{ gridColumn: "span 12" as any }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 16,
-                    gridTemplateColumns: "repeat(12, 1fr)",
-                  }}
-                >
-                  <div style={{ gridColumn: "span 12" as any }} />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ gridColumn: "span 12" as any }}>
-            <div
-              style={{
-                display: "grid",
-                gap: 16,
-                gridTemplateColumns: "repeat(12, 1fr)",
-              }}
-            >
-              <div style={{ gridColumn: "span 12" as any }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 16,
-                    gridTemplateColumns: "repeat(12, 1fr)",
-                  }}
-                >
-                  {/* Left */}
-                  <div style={{ gridColumn: "span 12" as any }}>
-                    <div
-                      style={{
-                        display: "grid",
-                        gap: 16,
-                        gridTemplateColumns: "repeat(12, 1fr)",
-                      }}
-                    >
-                      <div style={{ gridColumn: "span 12" as any }} />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Actual cards with a simple responsive rule */}
-        <div
-          style={{
-            display: "grid",
-            gap: 16,
-            marginTop: 16,
-          }}
-        >
-          <div
-            style={{
-              display: "grid",
-              gap: 16,
-              gridTemplateColumns: "repeat(12, 1fr)",
-            }}
-          >
-            {/* Next Session */}
-            <div style={{ gridColumn: "span 12" as any }}>
-              <StoneCard active>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: 12, flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontWeight: 950, color: "#fff", letterSpacing: 1, textTransform: "uppercase" }}>
-                      Next Session
-                    </div>
-
-                    {nextSession ? (
-                      <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                        <div style={{ fontSize: 16, fontWeight: 950, color: THEME.textSilver }}>
-                          {nextSession.title || "Untitled"}
-                        </div>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <Pill active>🕒 {fmtWhen(nextSession.startLocal)}</Pill>
-                          <Pill active>⏱ {Number(nextSession.durationMinutes || 0)} min</Pill>
-                          <Pill active>🔥 Scheduled</Pill>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ marginTop: 10, color: THEME.textAsh, fontWeight: 900 }}>
-                        No session currently scheduled.
-                      </div>
-                    )}
-                  </div>
-
-                  <a
-                    href={sessionsUrl}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: `1px solid ${THEME.stoneBorder}`,
-                      background: "rgba(12,14,18,0.6)",
-                      color: THEME.textSilver,
-                      textDecoration: "none",
-                      fontWeight: 950,
-                      letterSpacing: 1,
-                      textTransform: "uppercase",
-                      fontSize: 12,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {nextSession ? "Manage sessions" : "Create session"}
-                  </a>
-                </div>
-
-                <div style={{ marginTop: 12, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>
-                  RSVP flow handled via Discord
-                </div>
-              </StoneCard>
-            </div>
-
-            {/* Roles */}
-            <div style={{ gridColumn: "span 12" as any }}>
-              <StoneCard active>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: 12, flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontWeight: 950, color: "#fff", letterSpacing: 1, textTransform: "uppercase" }}>
-                      Hub Roles
-                    </div>
-
-                    <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <Pill active>{roles.combat ? "✅ Combat set" : "⚠️ Combat not set"}</Pill>
-                      <Pill active>{roles.logistics ? "✅ Logistics set" : "⚠️ Logistics not set"}</Pill>
-                      <Pill active>{rolesConfigured ? "🔥 Configured" : "🪨 Incomplete"}</Pill>
-                    </div>
-
-                    <div style={{ marginTop: 10, color: THEME.textAsh, fontSize: 12, fontWeight: 900, maxWidth: 760 }}>
-                      These badges display in RSVP rosters and on the hub experience once you enable more modules.
-                    </div>
-                  </div>
-
-                  <a
-                    href={rolesUrl}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: `1px solid ${THEME.stoneBorder}`,
-                      background: "rgba(12,14,18,0.6)",
-                      color: THEME.textSilver,
-                      textDecoration: "none",
-                      fontWeight: 950,
-                      letterSpacing: 1,
-                      textTransform: "uppercase",
-                      fontSize: 12,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    Edit roles
-                  </a>
-                </div>
-              </StoneCard>
-            </div>
-
-            {/* Hub Status */}
-            <div style={{ gridColumn: "span 12" as any }}>
-              <StoneCard>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: 12, flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontWeight: 950, color: "#fff", letterSpacing: 1, textTransform: "uppercase" }}>
-                      Hub Status
-                    </div>
-
-                    <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <Pill>🟢 Online</Pill>
-                      <Pill>Role sync available</Pill>
-                      <Pill>More modules soon</Pill>
-                    </div>
-
-                    <div style={{ marginTop: 10, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>
-                      System nominal. Patch tracking and members will come later.
-                    </div>
-                  </div>
-
-                  <a
-                    href={dashboardUrl}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: `1px solid ${THEME.stoneBorder}`,
-                      background: "rgba(12,14,18,0.6)",
-                      color: THEME.textSilver,
-                      textDecoration: "none",
-                      fontWeight: 950,
-                      letterSpacing: 1,
-                      textTransform: "uppercase",
-                      fontSize: 12,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    Refresh
-                  </a>
-                </div>
-              </StoneCard>
-            </div>
-          </div>
-        </div>
-
-        {/* Quick Access */}
-        <div style={{ marginTop: 18 }}>
-          <StoneCard>
-            <div style={{ fontWeight: 950, color: THEME.flameGold, letterSpacing: 3, textTransform: "uppercase", fontSize: 12 }}>
-              Quick Access
-            </div>
-
-            <div style={{ marginTop: 14, display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
               <a
                 href={sessionsUrl}
                 style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
                   border: `1px solid ${THEME.stoneBorder}`,
-                  borderRadius: 6,
-                  padding: 14,
-                  background: "rgba(0,0,0,0.28)",
-                  textDecoration: "none",
+                  background: "rgba(12,14,18,0.6)",
                   color: THEME.textSilver,
+                  textDecoration: "none",
                   fontWeight: 950,
-                  letterSpacing: 0.4,
+                  letterSpacing: 1,
+                  textTransform: "uppercase",
+                  fontSize: 12,
+                  whiteSpace: "nowrap",
                 }}
               >
-                Sessions
-                <div style={{ marginTop: 6, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>
-                  Create and manage runs
-                </div>
+                {nextSession ? "Manage sessions" : "Create session"}
               </a>
+            </div>
+
+            <div style={{ marginTop: 12, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>RSVP flow handled via Discord</div>
+          </StoneCard>
+
+          {/* Roles */}
+          <StoneCard active>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 950, color: "#fff", letterSpacing: 1, textTransform: "uppercase" }}>Hub Roles</div>
+
+                <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Pill active>{roles.combat ? "✅ Combat set" : "⚠️ Combat not set"}</Pill>
+                  <Pill active>{roles.logistics ? "✅ Logistics set" : "⚠️ Logistics not set"}</Pill>
+                  <Pill active>{rolesConfigured ? "🔥 Configured" : "🪨 Incomplete"}</Pill>
+                </div>
+
+                <div style={{ marginTop: 10, color: THEME.textAsh, fontSize: 12, fontWeight: 900, maxWidth: 760 }}>
+                  These badges display in RSVP rosters and on the hub experience once you enable more modules.
+                </div>
+              </div>
 
               <a
                 href={rolesUrl}
                 style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
                   border: `1px solid ${THEME.stoneBorder}`,
-                  borderRadius: 6,
-                  padding: 14,
-                  background: "rgba(0,0,0,0.28)",
-                  textDecoration: "none",
+                  background: "rgba(12,14,18,0.6)",
                   color: THEME.textSilver,
+                  textDecoration: "none",
                   fontWeight: 950,
-                  letterSpacing: 0.4,
+                  letterSpacing: 1,
+                  textTransform: "uppercase",
+                  fontSize: 12,
+                  whiteSpace: "nowrap",
                 }}
               >
-                Roles
-                <div style={{ marginTop: 6, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>
-                  Select hub badges
-                </div>
+                Edit roles
               </a>
+            </div>
+          </StoneCard>
 
-              <div
-                style={{
-                  border: `1px solid ${THEME.stoneBorder}`,
-                  borderRadius: 6,
-                  padding: 14,
-                  background: "rgba(0,0,0,0.18)",
-                  color: THEME.textAsh,
-                  fontWeight: 950,
-                  letterSpacing: 0.4,
-                  opacity: 0.65,
-                }}
-              >
-                Builds
-                <div style={{ marginTop: 6, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>
-                  Soon
+          {/* Status */}
+          <StoneCard>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 950, color: "#fff", letterSpacing: 1, textTransform: "uppercase" }}>Hub Status</div>
+
+                <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Pill>🟢 Online</Pill>
+                  <Pill>Role sync available</Pill>
+                  <Pill>More modules soon</Pill>
+                </div>
+
+                <div style={{ marginTop: 10, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>
+                  System nominal. Patch tracking and members will come later.
                 </div>
               </div>
 
-              <div
+              <a
+                href={dashboardUrl}
                 style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
                   border: `1px solid ${THEME.stoneBorder}`,
-                  borderRadius: 6,
-                  padding: 14,
-                  background: "rgba(0,0,0,0.18)",
-                  color: THEME.textAsh,
+                  background: "rgba(12,14,18,0.6)",
+                  color: THEME.textSilver,
+                  textDecoration: "none",
                   fontWeight: 950,
-                  letterSpacing: 0.4,
-                  opacity: 0.65,
+                  letterSpacing: 1,
+                  textTransform: "uppercase",
+                  fontSize: 12,
+                  whiteSpace: "nowrap",
                 }}
               >
-                Map
-                <div style={{ marginTop: 6, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>
-                  Soon
-                </div>
-              </div>
-
-              <div
-                style={{
-                  border: `1px solid ${THEME.stoneBorder}`,
-                  borderRadius: 6,
-                  padding: 14,
-                  background: "rgba(0,0,0,0.18)",
-                  color: THEME.textAsh,
-                  fontWeight: 950,
-                  letterSpacing: 0.4,
-                  opacity: 0.65,
-                }}
-              >
-                Resources
-                <div style={{ marginTop: 6, color: THEME.textAsh, fontSize: 12, fontWeight: 900 }}>
-                  Soon
-                </div>
-              </div>
+                Refresh
+              </a>
             </div>
           </StoneCard>
         </div>
@@ -994,17 +537,6 @@ export default async function DashboardPage(props: {
           This hub is designed to grow without rewriting core systems.
         </div>
       </div>
-
-      {/* Responsive tweak for 3 card grid */}
-      <style>{`
-        @media (min-width: 980px) {
-          .eh-grid-3 {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 16px;
-          }
-        }
-      `}</style>
     </div>
   );
 }
