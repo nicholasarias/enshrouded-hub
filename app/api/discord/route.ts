@@ -661,10 +661,23 @@ export async function POST(req: Request) {
             lines.push("If login issues happen, use one consistent host (ngrok OR localhost) to avoid cookie mismatch.");
 
             await postToInteractionWebhook({ token, content: lines.join("\n"), flags: 64 });
-          } catch (e) {
-            console.error("Setup save failed:", e);
-            await postToInteractionWebhook({ token, content: "❌ Failed to save setup. Check server logs.", flags: 64 });
-          }
+          } catch (e: any) {
+  console.error("Setup save failed:", e);
+
+  const msg =
+    typeof e?.message === "string" && e.message.trim()
+      ? e.message.trim()
+      : typeof e === "string"
+        ? e
+        : JSON.stringify(e);
+
+  await postToInteractionWebhook({
+    token,
+    content: `❌ Setup failed:\n\`\`\`\n${msg.slice(0, 1500)}\n\`\`\``,
+    flags: 64,
+  });
+}
+
         })();
 
         return ack;
@@ -793,13 +806,22 @@ export async function POST(req: Request) {
               flags: 64,
             });
           } catch (e: any) {
-            console.error("/rsvp failed:", e);
-            await postToInteractionWebhook({
-              token,
-              content: `❌ Failed to create session.\n${e?.message || "Check server logs."}`,
-              flags: 64,
-            });
-          }
+  console.error("/rsvp failed:", e);
+
+  const msg =
+    typeof e?.message === "string" && e.message.trim()
+      ? e.message.trim()
+      : typeof e === "string"
+        ? e
+        : JSON.stringify(e);
+
+  await postToInteractionWebhook({
+    token,
+    content: `❌ RSVP failed:\n\`\`\`\n${msg.slice(0, 1500)}\n\`\`\``,
+    flags: 64,
+  });
+}
+
         })();
 
         return ack;
