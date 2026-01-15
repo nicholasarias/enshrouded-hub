@@ -98,38 +98,25 @@ function optionValue(body: any, name: string) {
 }
 
 // =======================================================
-// Discord avatar helpers (embed thumbnail)
+// Discord thumbnail helpers (static image, not user avatar)
 // =======================================================
-function discordAvatarUrlFromInteraction(body: any, size = 128) {
-  const user = body?.member?.user ?? body?.user;
-  const id = String(user?.id || "").trim();
-  const avatar = String(user?.avatar || "").trim();
+const RSVP_THUMBNAIL_URL =
+  "https://cdn.discordapp.com/attachments/1391170867588894811/1461391205685530811/AIJ2gl-iEU2hv3hbddbQzFUNa9qa_rRCEOz0HcqYkUN5lo2-flbUSWDp3XE0R1X7gri-64KQNOb6blUsD8zUnKDxE_9RgtaiF1bww5fA7NESLatQJ2oAqm2Ju3fKrGO7tjdfn2pElBm6Shv876ETC-dtvsVMUHiebG8d92VAmjiSE-fJ2UlJad0jAfKapLLMdgAUAih2Tz-JZrQ9UTlDX7H1gge-KBh1HGmZ2EKhZwb3ras7mQNQ0vDgP3X88AxoIp7ekwyyi8bzwUrbhBpxBZVkr96kBcC8GVuQxPrSBgZu9jqTMS9u8fleZ6Kg-kuGpJid76d0_lQ4jOLNMtSbAjCrENzCs1024-rj.png";
 
-  if (id && avatar) {
-    const ext = avatar.startsWith("a_") ? "gif" : "png";
-    return `https://cdn.discordapp.com/avatars/${id}/${avatar}.${ext}?size=${size}`;
-  }
-
-  const disc = Number(user?.discriminator || 0);
-  const index = Number.isFinite(disc) ? disc % 5 : 0;
-  return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
-}
-
-function attachThumbnailToFirstEmbed(payload: any, thumbnailUrl: string) {
-  if (!thumbnailUrl) return payload;
-
+function attachThumbnailToFirstEmbed(payload: any, _unused?: string) {
   const target = payload?.data && typeof payload.data === "object" ? payload.data : payload;
   const embeds = target?.embeds;
 
   if (Array.isArray(embeds) && embeds.length > 0) {
     embeds[0] = {
       ...embeds[0],
-      thumbnail: { url: thumbnailUrl },
+      thumbnail: { url: RSVP_THUMBNAIL_URL },
     };
   }
 
   return payload;
 }
+
 
 // =======================================================
 // Icons + helpers
@@ -821,9 +808,8 @@ export async function POST(req: Request) {
           badgeParts,
         });
 
-        // Ensure a visible picture on Discord via embed thumbnail
-        const thumb = discordAvatarUrlFromInteraction(body);
-        attachThumbnailToFirstEmbed(payload, thumb);
+        attachThumbnailToFirstEmbed(payload);
+
 
         // 4) Post to channel as bot
         let postedMessageId = "";
@@ -964,9 +950,7 @@ export async function POST(req: Request) {
           badgeParts,
         });
 
-        // Ensure a visible picture on Discord via embed thumbnail
-        const thumb = discordAvatarUrlFromInteraction(body);
-        attachThumbnailToFirstEmbed(payload, thumb);
+        attachThumbnailToFirstEmbed(payload);
 
         // 3) Update the message directly as the interaction response
         return NextResponse.json({
