@@ -18,21 +18,33 @@ function normalizeStatus(input: any): "in" | "maybe" | "out" | null {
   return null;
 }
 
+function pickGuildId(url: URL) {
+  const fromQuery = String(url.searchParams.get("guildId") || "").trim();
+  if (fromQuery) return fromQuery;
+
+  // Default to your configured guild when the page forgets to pass guildId
+  const fromEnv = String(process.env.NEXT_PUBLIC_DISCORD_GUILD_ID || "").trim();
+  if (fromEnv) return fromEnv;
+
+  return "";
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const guildId = String(url.searchParams.get("guildId") || "").trim();
+  const guildId = pickGuildId(url);
 
   if (!guildId) {
-    return NextResponse.json({ error: "Missing guildId" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing guildId (pass ?guildId=... or set NEXT_PUBLIC_DISCORD_GUILD_ID)" },
+      { status: 400 }
+    );
   }
 
   const limit = Math.min(Number(url.searchParams.get("limit") || 50), 100);
 
   const { data, error } = await supabaseAdmin
     .from("sessions")
-    .select(
-      "id,title,start_local,duration_minutes,notes,guild_id,discord_channel_id,discord_message_id,created_at"
-    )
+    .select("id,title,start_local,duration_minutes,notes,guild_id,discord_channel_id,discord_message_id,created_at")
     .eq("guild_id", guildId)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -58,7 +70,6 @@ export async function GET(req: Request) {
   // RSVP counts in one pass
   const ids = sessions.map((s) => s.id).filter(Boolean);
   const countsBySession = new Map<string, Counts>();
-
   for (const id of ids) countsBySession.set(id, { in: 0, maybe: 0, out: 0 });
 
   if (ids.length) {
@@ -91,5 +102,5 @@ export async function GET(req: Request) {
     counts: countsBySession.get(s.id) || { in: 0, maybe: 0, out: 0 },
   }));
 
-  return NextResponse.json({ sessions: sessionsWithCounts });
+  return NextResponse.json({ sessions: sessionsWithCounts, guildId });
 }
