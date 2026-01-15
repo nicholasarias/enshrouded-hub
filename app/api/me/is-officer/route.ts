@@ -42,7 +42,8 @@ function pickDiscordUserId(session: any): string | null {
 export async function GET(req: Request) {
   const session: any = await auth();
 
-  console.log("IS_OFFICER session?", Boolean(session), "user.id:", session?.user?.id);
+  const discordUserIdForLog = pickDiscordUserId(session);
+  console.log("IS_OFFICER session?", Boolean(session), "discordUserId:", discordUserIdForLog);
 
   if (!session) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
@@ -55,10 +56,10 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "Missing or invalid guildId" }, { status: 400 });
   }
 
-  // Prefer profile UUID from session (matches user_guild_roles.user_id)
+  // Prefer profile UUID from session (if you ever add it later)
   let profileId = String(session?.user?.id || "").trim();
 
-  // If session.user.id is not a UUID, fall back to mapping discord id -> profile id
+  // If session.user.id is not a UUID, map discord id -> profiles.id
   if (!isUuid(profileId)) {
     const discordUserId = pickDiscordUserId(session);
 
@@ -74,7 +75,7 @@ export async function GET(req: Request) {
         return NextResponse.json({ ok: false, error: "Profile lookup failed" }, { status: 500 });
       }
 
-      profileId = String((prof as any)?.id || "").trim();
+      profileId = String(prof?.id || "").trim();
     }
   }
 
@@ -94,12 +95,12 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "guild_settings lookup failed" }, { status: 500 });
   }
 
-  const officerRoleId = String((gs as any)?.officer_role_id || "").trim();
+  const officerRoleId = String(gs?.officer_role_id || "").trim();
   if (!officerRoleId || !isSnowflake(officerRoleId)) {
     return NextResponse.json({ ok: true, guildId, isOfficer: false }, { status: 200 });
   }
 
-  const { data: link, error: linkErr } = await supabaseAdmin
+  const { data: linkData, error: linkErr } = await supabaseAdmin
     .from("user_guild_roles")
     .select("role_id")
     .eq("guild_id", guildId)
@@ -112,5 +113,8 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "user_guild_roles lookup failed" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, guildId, isOfficer: Boolean(link) }, { status: 200 });
+  return NextResponse.json(
+    { ok: true, guildId, isOfficer: Boolean(linkData) },
+    { status: 200 }
+  );
 }
