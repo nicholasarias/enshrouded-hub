@@ -27,18 +27,32 @@ type DetailResponse = {
   rosters: { in: RsvpItem[]; maybe: RsvpItem[]; out: RsvpItem[] };
 };
 
+function getBaseUrl() {
+  // Prefer explicit base URL if you set it
+  const explicit = String(process.env.NEXT_PUBLIC_BASE_URL || "").trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+
+  // Vercel provides VERCEL_URL without protocol
+  const vercel = String(process.env.VERCEL_URL || "").trim();
+  if (vercel) return `https://${vercel}`.replace(/\/+$/, "");
+
+  // Fallback (local dev)
+  return "http://localhost:3000";
+}
+
 async function getDetail(params: { sessionId: string; guildId?: string | null }): Promise<DetailResponse | null> {
   const sessionId = String(params.sessionId || "").trim();
   const guildId = String(params.guildId || "").trim();
-
   if (!sessionId) return null;
 
   const qs = new URLSearchParams();
   qs.set("sessionId", sessionId);
   if (guildId) qs.set("guildId", guildId);
 
-  // Use relative URL so Vercel always hits the same deployment host correctly
-  const res = await fetch(`/api/sessions/detail?${qs.toString()}`, { cache: "no-store" });
+  const baseUrl = getBaseUrl();
+  const url = `${baseUrl}/api/sessions/detail?${qs.toString()}`;
+
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) return null;
 
   return res.json();
