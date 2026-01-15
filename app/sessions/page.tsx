@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import type { CSSProperties } from "react";
+import { headers } from "next/headers";
 import CreateSessionClient from "./create-session-client";
 import TopBar from "@/app/components/TopBar";
 
@@ -48,13 +49,23 @@ function isSnowflake(id: string) {
   return /^\d{10,25}$/.test(String(id || ""));
 }
 
-function getBaseUrl() {
+async function getBaseUrl() {
+  try {
+    const h = await headers();
+    const host = h.get("x-forwarded-host") || h.get("host") || "";
+    const proto = h.get("x-forwarded-proto") || "https";
+    if (host) return `${proto}://${host}`;
+  } catch {
+    // ignore
+  }
+
   const fromEnv =
     process.env.NEXT_PUBLIC_BASE_URL ||
     process.env.VERCEL_URL ||
     process.env.NEXT_PUBLIC_VERCEL_URL;
 
   if (fromEnv) return fromEnv.startsWith("http") ? fromEnv : `https://${fromEnv}`;
+
   return "http://localhost:3000";
 }
 
@@ -69,7 +80,7 @@ function buildUrl(basePath: string, params: Record<string, string | null | undef
 }
 
 async function getSessions(guildId: string): Promise<SessionItem[]> {
-  const baseUrl = getBaseUrl();
+  const baseUrl = await getBaseUrl();
 
   const res = await fetch(
     `${baseUrl}/api/sessions/list?guildId=${encodeURIComponent(guildId)}&limit=50`,
@@ -79,7 +90,6 @@ async function getSessions(guildId: string): Promise<SessionItem[]> {
   if (!res.ok) return [];
   const json = (await res.json()) as { sessions: SessionItem[] };
 
-  // Ensure counts always exist for UI (even if endpoint omits it)
   return (json.sessions || []).map((s) => ({
     ...s,
     counts: s.counts || { in: 0, maybe: 0, out: 0 },
@@ -472,7 +482,6 @@ function stableTimeValue(s: SessionItem) {
 }
 
 export default async function SessionsPage(props: { searchParams?: SearchParamsInput | Promise<SearchParamsInput> }) {
-  // Next can pass searchParams as a Promise in newer versions
   let sp: SearchParamsInput = {};
   const spRaw = props.searchParams as any;
 
@@ -489,11 +498,10 @@ export default async function SessionsPage(props: { searchParams?: SearchParamsI
   const rawShow = Array.isArray(sp.show) ? sp.show[0] : sp.show;
 
   const q = String(rawQ || "").trim().slice(0, 80);
-  const show = String(rawShow || "all").trim().toLowerCase(); // all | upcoming | past
+  const show = String(rawShow || "all").trim().toLowerCase();
 
   const sessions = await getSessions(guildId);
 
-  // Search
   const filtered = q
     ? sessions.filter((s) => {
         const hay = `${s.title || ""} ${s.notes || ""}`.toLowerCase();
@@ -501,7 +509,6 @@ export default async function SessionsPage(props: { searchParams?: SearchParamsI
       })
     : sessions;
 
-  // Split and sort
   let upcoming = filtered.filter((s) => s.upcoming);
   let past = filtered.filter((s) => !s.upcoming);
 
@@ -586,10 +593,7 @@ export default async function SessionsPage(props: { searchParams?: SearchParamsI
                   padding: "8px 10px",
                   borderRadius: 999,
                   border: `1px solid ${THEME.stoneBorder}`,
-                  background:
-                    show === "all"
-                      ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})`
-                      : "rgba(12,14,18,0.6)",
+                  background: show === "all" ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})` : "rgba(12,14,18,0.6)",
                   color: show === "all" ? "#111" : THEME.textSilver,
                   textDecoration: "none",
                   fontWeight: 950,
@@ -609,9 +613,7 @@ export default async function SessionsPage(props: { searchParams?: SearchParamsI
                   borderRadius: 999,
                   border: `1px solid ${THEME.stoneBorder}`,
                   background:
-                    show === "upcoming"
-                      ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})`
-                      : "rgba(12,14,18,0.6)",
+                    show === "upcoming" ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})` : "rgba(12,14,18,0.6)",
                   color: show === "upcoming" ? "#111" : THEME.textSilver,
                   textDecoration: "none",
                   fontWeight: 950,
@@ -630,10 +632,7 @@ export default async function SessionsPage(props: { searchParams?: SearchParamsI
                   padding: "8px 10px",
                   borderRadius: 999,
                   border: `1px solid ${THEME.stoneBorder}`,
-                  background:
-                    show === "past"
-                      ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})`
-                      : "rgba(12,14,18,0.6)",
+                  background: show === "past" ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})` : "rgba(12,14,18,0.6)",
                   color: show === "past" ? "#111" : THEME.textSilver,
                   textDecoration: "none",
                   fontWeight: 950,
