@@ -471,7 +471,9 @@ function RosterRow(props: { u: RsvpItem; showIds: boolean }) {
             padding: "8px 10px",
             borderRadius: 999,
             border: `1px solid ${THEME.stoneBorder}`,
-            background: copied ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})` : "rgba(12,14,18,0.6)",
+            background: copied
+              ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})`
+              : "rgba(12,14,18,0.6)",
             color: copied ? "#111" : THEME.textSilver,
             cursor: "pointer",
             fontWeight: 950,
@@ -557,7 +559,16 @@ export default function SessionDetailClient(props: { data: DetailResponse }) {
             Session not found
           </div>
 
-          <ActionLink href="/sessions">Back</ActionLink>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <ActionLink href="/sessions">Back</ActionLink>
+            <ActionLink href="/sessions" primary>
+              Refresh list
+            </ActionLink>
+          </div>
+
+          <div style={{ marginTop: 14, color: THEME.textAsh, fontWeight: 900 }}>
+            If the session was created from Discord, wait a few seconds then refresh.
+          </div>
         </div>
       </div>
     );
@@ -575,6 +586,67 @@ export default function SessionDetailClient(props: { data: DetailResponse }) {
     const ids = (items || []).map((u) => u.discordUserId).filter(Boolean);
     const text = ids.join("\n");
     await copyText(text);
+  }
+
+  async function onEdit() {
+    const t = window.prompt("New title", s.title || "");
+    if (t === null) return;
+
+    const when = window.prompt("New startLocal (ISO or yyyy-mm-ddThh:mm)", s.startLocal || "");
+    if (when === null) return;
+
+    const durStr = window.prompt("New durationMinutes", String(s.durationMinutes || 90));
+    if (durStr === null) return;
+
+    const n = window.prompt("New notes", s.notes || "");
+    if (n === null) return;
+
+    const dur = Number(durStr) || 0;
+
+    try {
+      const res = await fetch("/api/sessions/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: s.id,
+          title: t,
+          startLocal: when,
+          durationMinutes: dur,
+          notes: n,
+        }),
+      });
+
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || "Failed to update");
+      }
+
+      window.location.reload();
+    } catch (e: any) {
+      alert(e?.message || "Update failed");
+    }
+  }
+
+  async function onDelete() {
+    const ok = window.confirm("Delete this session and all RSVPs. This cannot be undone.");
+    if (!ok) return;
+
+    try {
+      const res = await fetch("/api/sessions/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: s.id }),
+      });
+
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || "Failed to delete");
+      }
+
+      window.location.href = "/sessions";
+    } catch (e: any) {
+      alert(e?.message || "Delete failed");
+    }
   }
 
   return (
@@ -675,6 +747,46 @@ export default function SessionDetailClient(props: { data: DetailResponse }) {
               }}
             >
               {showIds ? "Hide IDs" : "Show IDs"}
+            </button>
+
+            <button
+              type="button"
+              onClick={onEdit}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: `1px solid ${THEME.stoneBorder}`,
+                background: "rgba(12,14,18,0.6)",
+                color: THEME.textSilver,
+                cursor: "pointer",
+                fontWeight: 950,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                fontSize: 12,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Edit
+            </button>
+
+            <button
+              type="button"
+              onClick={onDelete}
+              style={{
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: `1px solid ${THEME.stoneBorder}`,
+                background: "rgba(42,11,11,0.55)",
+                color: THEME.textSilver,
+                cursor: "pointer",
+                fontWeight: 950,
+                letterSpacing: 1,
+                textTransform: "uppercase",
+                fontSize: 12,
+                whiteSpace: "nowrap",
+              }}
+            >
+              Delete
             </button>
           </div>
 
