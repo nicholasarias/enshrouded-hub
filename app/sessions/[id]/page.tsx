@@ -1,6 +1,7 @@
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+import { headers } from "next/headers";
 import SessionDetailClient from "./session-detail-client";
 
 type BadgeParts = { combat: string; logistics: string };
@@ -27,57 +28,55 @@ type DetailResponse = {
   rosters: { in: RsvpItem[]; maybe: RsvpItem[]; out: RsvpItem[] };
 };
 
-function getBaseUrl() {
-  // Prefer explicit base URL if you set it
-  const explicit = String(process.env.NEXT_PUBLIC_BASE_URL || "").trim();
-  if (explicit) return explicit.replace(/\/+$/, "");
+async function getBaseUrlFromHeaders() {
+  try {
+    const h = await headers();
+    const host = h.get("x-forwarded-host") || h.get("host") || "";
+    const proto = h.get("x-forwarded-proto") || "https";
+    if (host) return `${proto}://${host}`;
+  } catch {
+    // ignore
+  }
+  return "";
+}
 
-  // Vercel provides VERCEL_URL without protocol
-  const vercel = String(process.env.VERCEL_URL || "").trim();
-  if (vercel) return `https://${vercel}`.replace(/\/+$/, "");
+function getBaseUrlFromEnv() {
+  const fromEnv =
+    process.env.NEXT_PUBLIC_BASE_URL ||
+    process.env.AUTH_URL ||
+    process.env.NEXTAUTH_URL ||
+    process.env.VERCEL_URL ||
+    process.env.NEXT_PUBLIC_VERCEL_URL;
 
-  // Fallback (local dev)
+  if (fromEnv) return fromEnv.startsWith("http") ? fromEnv : `https://${fromEnv}`;
   return "http://localhost:3000";
 }
 
-async function getDetail(params: { sessionId: string; guildId?: string | null }): Promise<DetailResponse | null> {
-  const sessionId = String(params.sessionId || "").trim();
-  const guildId = String(params.guildId || "").trim();
-  if (!sessionId) return null;
+async function getDetail(sessionId: string, guildId: string): Promise<DetailResponse | null> {
+  const base = (await getBaseUrlFromHeaders()) || getBaseUrlFromEnv();
 
-  const qs = new URLSearchParams();
-  qs.set("sessionId", sessionId);
-  if (guildId) qs.set("guildId", guildId);
+  const url = new URL("/api/sessions/detail", base);
+  url.searchParams.set("sessionId", sessionId);
+  if (guildId) url.searchParams.set("guildId", guildId);
 
-  const baseUrl = getBaseUrl();
-  const url = `${baseUrl}/api/sessions/detail?${qs.toString()}`;
-
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetch(url.toString(), { cache: "no-store" });
   if (!res.ok) return null;
-
   return res.json();
 }
 
 export default async function SessionDetailPage(props: {
   params: Promise<{ id: string }> | { id: string };
-  searchParams?: Promise<Record<string, string | string[] | undefined>> | Record<string, string | string[] | undefined>;
+  searchParams?: any;
 }) {
   const resolvedParams =
     typeof (props.params as any)?.then === "function"
       ? await (props.params as Promise<{ id: string }>)
       : (props.params as { id: string });
 
-  const resolvedSearchParams =
-    props.searchParams && typeof (props.searchParams as any)?.then === "function"
-      ? await (props.searchParams as Promise<Record<string, string | string[] | undefined>>)
-      : (props.searchParams as Record<string, string | string[] | undefined>) || {};
-
   const sessionId = String(resolvedParams?.id || "").trim();
+  const guildId = String((props as any)?.searchParams?.guildId || "").trim();
 
-  const guildIdRaw = resolvedSearchParams.guildId;
-  const guildId = Array.isArray(guildIdRaw) ? String(guildIdRaw[0] || "") : String(guildIdRaw || "");
-
-  const data = await getDetail({ sessionId, guildId });
+  const data = sessionId ? await getDetail(sessionId, guildId) : null;
 
   return <SessionDetailClient data={data} />;
 }
