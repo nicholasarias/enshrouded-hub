@@ -843,41 +843,100 @@ export async function POST(req: Request) {
       return ack;
     }
 
-    // 3) BUTTON CLICKS
-    if (body.type === 3) {
-      const customId = String(body.data?.custom_id || "");
-      if (!customId.startsWith("rsvp:")) return NextResponse.json({ type: 6 });
+    // 3) BUTTON CLICKS (INLINE on Vercel, return UPDATE_MESSAGE)
+if (body.type === 3) {
+  try {
+    const supabaseAdmin = await getSupabaseAdmin();
+    const { buildSessionEmbedPayload } = await getEmbedBuilder();
 
-      const [, sessionId, status] = customId.split(":");
-      const discordUserId = String(body.member?.user?.id || body.user?.id || "");
-      const token = String(body.token || "");
+    const customId = String(body.data?.custom_id || "");
+    if (!customId.startsWith("rsvp:")) return NextResponse.json({ type: 6 });
 
-      if (!sessionId || !discordUserId || !token || !["in", "maybe", "out"].includes(status)) {
-        return NextResponse.json({ type: 6 });
-      }
+    const [, sessionId, status] = customId.split(":");
+    const discordUserId = String(body.member?.user?.id || body.user?.id || "");
 
-      void (async () => {
-        try {
-          const supabaseAdmin = await getSupabaseAdmin();
-
-          await supabaseAdmin.from("session_rsvps").upsert(
-            {
-              session_id: sessionId,
-              user_id: discordUserId,
-              status,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: "session_id,user_id" }
-          );
-
-          await updatePostedSessionMessage({ sessionId });
-        } catch (e) {
-          console.error("RSVP background update failed:", e);
-        }
-      })();
-
+    if (!sessionId || !discordUserId || !["in", "maybe", "out"].includes(status)) {
       return NextResponse.json({ type: 6 });
     }
+
+    // 1) Save RSVP
+    const { error: upErr } = await supabaseAdmin.from("session_rsvps").upsert(
+      {
+        session_id: sessionId,
+        user_id: discordUserId,
+        status,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "session_id,user_id" }
+    );
+
+    if (upErr) {
+      console.error("RSVP upsert failed:", upErr);
+      return NextResponse.json({ type: 6 });
+    }
+
+    // 2) Load session + RSVPs to rebuild embed
+    const { data: session, error: sessionErr } = await supabaseAdmin
+      .from("sessions")
+      .select("title,start_local,duration_minutes,notes,guild_id")
+      .eq("id", sessionId)
+      .single();
+
+    if (sessionErr || !session) {
+      console.error("Session lookup failed:", sessionErr);
+      return NextResponse.json({ type: 6 });
+    }
+
+    const { data: rsvps, error: rsvpsErr } = await supabaseAdmin
+      .from("session_rsvps")
+      .select("status,user_id")
+      .eq("session_id", sessionId);
+
+    if (rsvpsErr) {
+      console.error("RSVP load failed:", rsvpsErr);
+      return NextResponse.json({ type: 6 });
+    }
+
+    const inUsers: string[] = [];
+    const maybeUsers: string[] = [];
+    const outUsers: string[] = [];
+
+    for (const r of rsvps ?? []) {
+      const s = String((r as any).status || "");
+      const did = String((r as any).user_id || "");
+      if (!did) continue;
+      if (s === "in") inUsers.push(did);
+      if (s === "maybe") maybeUsers.push(did);
+      if (s === "out") outUsers.push(did);
+    }
+
+    const guildId = String((session as any).guild_id || "");
+    const allIds = Array.from(new Set([...inUsers, ...maybeUsers, ...outUsers]));
+    const badgeParts = guildId
+      ? await loadUserBadgePartsForDiscordIds({ guildId, discordIds: allIds })
+      : new Map<string, BadgeParts>();
+
+    const payload = buildSessionEmbedPayload({
+      sessionId,
+      title: String((session as any).title),
+      startLocal: String((session as any).start_local),
+      durationMinutes: Number((session as any).duration_minutes),
+      notes: String((session as any).notes || ""),
+      guildId,
+      inUsers,
+      maybeUsers,
+      outUsers,
+      badgeParts,
+    });
+
+    // 3) Update the message directly as the interaction response
+    return NextResponse.json({ type: 7, data: payload });
+  } catch (e) {
+    console.error("Button handler crashed:", e);
+    return NextResponse.json({ type: 6 });
+  }
+}
+
 
     return NextResponse.json({ type: 6 });
   } catch (e: any) {
