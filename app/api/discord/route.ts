@@ -615,7 +615,7 @@ export async function POST(req: Request) {
 
       // Permission: always ACK, send message via webhook
       if ((commandName === "setup" || commandName === "rsvp") && !hasManagePerms(body)) {
-        void postToInteractionWebhook({
+        await postToInteractionWebhook({
           token,
           content: "You need Manage Server (or Admin) to use this command.",
           flags: 64,
@@ -625,7 +625,7 @@ export async function POST(req: Request) {
 
       // Run the heavy work AFTER ACK so Discord never times out
       if (commandName === "setup") {
-        void (async () => {
+        await (async () => {
           try {
             const supabaseAdmin = await getSupabaseAdmin();
 
@@ -903,7 +903,7 @@ export async function POST(req: Request) {
       }
 
       // Unknown command: respond after ACK
-      void postToInteractionWebhook({ token, content: "Unknown command.", flags: 64 });
+      await postToInteractionWebhook({ token, content: "Unknown command.", flags: 64 });
       return ack;
     }
 
