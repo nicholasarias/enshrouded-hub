@@ -394,10 +394,13 @@ async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discor
 // =======================================================
 async function postToInteractionWebhook(params: { token: string; content: string; flags?: number }) {
   const appId = process.env.DISCORD_APPLICATION_ID;
-  if (!appId) return;
+  if (!appId) {
+    throw new Error("DISCORD_APPLICATION_ID missing");
+  }
 
-  const url = `https://discord.com/api/v10/webhooks/${appId}/${params.token}`;
-  await fetch(url, {
+  const url = `https://discord.com/api/v10/webhooks/${appId}/${params.token}?wait=true`;
+
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -405,8 +408,18 @@ async function postToInteractionWebhook(params: { token: string; content: string
       flags: params.flags ?? 64,
       allowed_mentions: { parse: [] },
     }),
-  }).catch(() => null);
+  });
+
+  const text = await res.text().catch(() => "");
+
+  if (!res.ok) {
+    console.error("Interaction webhook failed", res.status, text);
+    throw new Error(`Interaction webhook failed: HTTP ${res.status} ${text}`);
+  }
+
+  return text;
 }
+
 
 async function postChannelMessageAsBot(params: { channelId: string; payload: any }) {
   const botToken = process.env.DISCORD_BOT_TOKEN;
