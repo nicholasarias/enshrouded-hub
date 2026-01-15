@@ -596,6 +596,12 @@ export async function POST(req: Request) {
         // background work
         void (async () => {
           try {
+                await postToInteractionWebhook({
+      token,
+      content: "⏳ Setup received. Working…",
+      flags: 64,
+    });
+
             const supabaseAdmin = await getSupabaseAdmin();
 
             if (!guildId || !isSnowflake(guildId)) {
@@ -668,6 +674,12 @@ export async function POST(req: Request) {
       if (commandName === "rsvp") {
         void (async () => {
           try {
+                await postToInteractionWebhook({
+      token,
+      content: "⏳ RSVP received. Creating the post…",
+      flags: 64,
+    });
+
             const supabaseAdmin = await getSupabaseAdmin();
             const { buildSessionEmbedPayload } = await getEmbedBuilder();
 
