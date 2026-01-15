@@ -127,10 +127,6 @@ export default function LandingIntro(props: { guildId: string }) {
         <button type="button" className="enterBtn" onClick={enter}>
           Enter the Shroud
         </button>
-
-        <div className="hint" aria-hidden="true">
-          Guild locked to {guildId}
-        </div>
       </div>
 
       <style jsx>{`
