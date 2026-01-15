@@ -88,24 +88,26 @@ function TopBar(props: { guildId: string }) {
         </div>
 
         <a
-          href={buildUrl("/landing", { guildId: props.guildId })}
-          style={{
-            padding: "10px 12px",
-            borderRadius: 8,
-            border: `1px solid ${THEME.stoneBorder}`,
-            background: "rgba(12,14,18,0.6)",
-            color: THEME.textSilver,
-            textDecoration: "none",
-            fontWeight: 950,
-            letterSpacing: 1,
-            textTransform: "uppercase",
-            fontSize: 12,
-            backdropFilter: "blur(6px)",
-            whiteSpace: "nowrap",
-          }}
-        >
-          Landing
-        </a>
+  href={buildUrl("/dashboard", { guildId: props.guildId })}
+  style={{
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: `1px solid ${THEME.stoneBorder}`,
+    background: `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})`,
+    color: "#111",
+    textDecoration: "none",
+    fontWeight: 950,
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    fontSize: 12,
+    backdropFilter: "blur(6px)",
+    whiteSpace: "nowrap",
+    boxShadow: `0 0 18px rgba(242, 153, 74, 0.25)`,
+  }}
+>
+  Dashboard
+</a>
+
       </div>
 
       <div
@@ -387,12 +389,13 @@ export default async function Home(props: { searchParams?: SearchParamsInput | P
             icon="🔥"
           />
           <Card
-            title="Landing"
-            subtitle="Cinematic entry page for the guild."
-            href="/landing"
-            guildId={guildId}
-            icon="🌫️"
-          />
+  title="Dashboard"
+  subtitle="Start here. Sync roles, sign in, and verify setup."
+  href="/dashboard"
+  guildId={guildId}
+  icon="🧭"
+/>
+
         </div>
 
         <footer
