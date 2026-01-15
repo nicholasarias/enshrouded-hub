@@ -12,13 +12,16 @@ export type BadgeParts = {
 // =======================================================
 function getBaseUrl() {
   const fromEnv =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_URL ||
     process.env.NEXT_PUBLIC_BASE_URL ||
-    process.env.VERCEL_URL ||
-    process.env.NEXT_PUBLIC_VERCEL_URL;
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
 
-  if (fromEnv) return fromEnv.startsWith("http") ? fromEnv : `https://${fromEnv}`;
-  return "http://localhost:3000";
+  const base = String(fromEnv || "").trim().replace(/\/+$/, "");
+  return base || "http://localhost:3000";
 }
+
+
 
 // =======================================================
 // Helpers
