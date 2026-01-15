@@ -684,149 +684,160 @@ export async function POST(req: Request) {
       }
 
 
-      // /rsvp
+            // /rsvp (RUN INLINE ON VERCEL, NO BACKGROUND ASYNC)
       if (commandName === "rsvp") {
-        void (async () => {
-          try {
-                await postToInteractionWebhook({
-      token,
-      content: "⏳ RSVP received. Creating the post…",
-      flags: 64,
-    });
+        const supabaseAdmin = await getSupabaseAdmin();
+        const { buildSessionEmbedPayload } = await getEmbedBuilder();
 
-            const supabaseAdmin = await getSupabaseAdmin();
-            const { buildSessionEmbedPayload } = await getEmbedBuilder();
+        const guildId = String(body.guild_id || "").trim();
 
-            const guildId = String(body.guild_id || "").trim();
+        const title = String(optionValue(body, "title") || "").trim();
+        const whenInput = String(optionValue(body, "when") || "").trim();
+        const parsedWhen = await parseWhenToChicagoIso(whenInput);
+        const when = parsedWhen.ok ? parsedWhen.iso : "";
 
-            const title = String(optionValue(body, "title") || "").trim();
-            const whenInput = String(optionValue(body, "when") || "").trim();
-            const parsedWhen = await parseWhenToChicagoIso(whenInput);
-            const when = parsedWhen.ok ? parsedWhen.iso : "";
+        const durationMinutes = Number(optionValue(body, "duration") || 0);
+        const notesRaw = optionValue(body, "notes");
+        const notes = String(notesRaw || "").trim();
 
-            const durationMinutes = Number(optionValue(body, "duration") || 0);
-            const notesRaw = optionValue(body, "notes");
-            const notes = String(notesRaw || "").trim();
+        if (!guildId) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "This command must be used in a server (guild).", flags: 64 },
+          });
+        }
 
-            if (!guildId) {
-              await postToInteractionWebhook({ token, content: "This command must be used in a server (guild).", flags: 64 });
-              return;
-            }
+        if (!title) {
+          return NextResponse.json({ type: 4, data: { content: "Missing title.", flags: 64 } });
+        }
 
-            if (!title) {
-              await postToInteractionWebhook({ token, content: "Missing title.", flags: 64 });
-              return;
-            }
+        if (!whenInput) {
+          return NextResponse.json({ type: 4, data: { content: "Missing when.", flags: 64 } });
+        }
 
-            if (!whenInput) {
-              await postToInteractionWebhook({ token, content: "Missing when.", flags: 64 });
-              return;
-            }
+        if (!parsedWhen.ok) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: `Invalid when. ${parsedWhen.error}`, flags: 64 },
+          });
+        }
 
-            if (!parsedWhen.ok) {
-              await postToInteractionWebhook({ token, content: `Invalid when. ${parsedWhen.error}`, flags: 64 });
-              return;
-            }
+        if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Duration must be a positive number of minutes.", flags: 64 },
+          });
+        }
 
-            if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-              await postToInteractionWebhook({
-                token,
-                content: "Duration must be a positive number of minutes.",
-                flags: 64,
-              });
-              return;
-            }
+        // 1) Find configured channel
+        const { data: serverRow, error: serverErr } = await supabaseAdmin
+          .from("discord_servers")
+          .select("channel_id")
+          .eq("guild_id", guildId)
+          .maybeSingle();
 
-            // 1) Find configured channel
-            const { data: serverRow, error: serverErr } = await supabaseAdmin
-              .from("discord_servers")
-              .select("channel_id")
-              .eq("guild_id", guildId)
-              .maybeSingle();
+        if (serverErr) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: `❌ DB error loading setup.\n${serverErr.message}`, flags: 64 },
+          });
+        }
 
-            if (serverErr) throw serverErr;
+        const channelId = String((serverRow as any)?.channel_id || "").trim();
+        if (!channelId) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "❌ No channel configured. Run `/setup` first and choose the posting channel.", flags: 64 },
+          });
+        }
 
-            const channelId = String((serverRow as any)?.channel_id || "").trim();
-            if (!channelId) {
-              await postToInteractionWebhook({
-                token,
-                content: "❌ No channel configured. Run `/setup` first and choose the posting channel.",
-                flags: 64,
-              });
-              return;
-            }
+        // 2) Create session in Supabase
+        const { data: inserted, error: insErr } = await supabaseAdmin
+          .from("sessions")
+          .insert({
+            guild_id: guildId,
+            title,
+            start_local: when,
+            duration_minutes: durationMinutes,
+            notes: notes || "",
+            created_at: new Date().toISOString(),
+          } as any)
+          .select("id,title,start_local,duration_minutes,notes,guild_id")
+          .single();
 
-            // 2) Create session
-            const { data: inserted, error: insErr } = await supabaseAdmin
-              .from("sessions")
-              .insert({
-                guild_id: guildId,
-                title,
-                start_local: when,
-                duration_minutes: durationMinutes,
-                notes: notes || "",
-                created_at: new Date().toISOString(),
-              } as any)
-              .select("id,title,start_local,duration_minutes,notes,guild_id")
-              .single();
+        if (insErr || !inserted) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: `❌ Failed to create session.\n${insErr?.message || ""}`, flags: 64 },
+          });
+        }
 
-            if (insErr) throw insErr;
+        const sessionId = String((inserted as any).id);
 
-            const sessionId = String((inserted as any).id);
+        // 3) Build initial payload (no RSVPs yet)
+        const badgeParts = new Map<string, BadgeParts>();
+        const payload = buildSessionEmbedPayload({
+          sessionId,
+          title: String((inserted as any).title),
+          startLocal: String((inserted as any).start_local),
+          durationMinutes: Number((inserted as any).duration_minutes),
+          notes: String((inserted as any).notes || ""),
+          guildId,
+          inUsers: [],
+          maybeUsers: [],
+          outUsers: [],
+          badgeParts,
+        });
 
-            // 3) Build initial embed payload
-            const badgeParts = new Map<string, BadgeParts>();
-            const payload = buildSessionEmbedPayload({
-              sessionId,
-              title: String((inserted as any).title),
-              startLocal: String((inserted as any).start_local),
-              durationMinutes: Number((inserted as any).duration_minutes),
-              notes: String((inserted as any).notes || ""),
-              guildId,
-              inUsers: [],
-              maybeUsers: [],
-              outUsers: [],
-              badgeParts,
-            });
+        // 4) Post to channel as bot
+        let postedMessageId = "";
+        try {
+          const posted = await postChannelMessageAsBot({ channelId, payload });
+          postedMessageId = String((posted as any)?.id || "").trim();
+        } catch (e: any) {
+          // rollback session row so you don't get orphan rows
+          await supabaseAdmin.from("sessions").delete().eq("id", sessionId);
 
-            // 4) Post message and store ids
-            const posted = await postChannelMessageAsBot({ channelId, payload });
-            const postedMessageId = String((posted as any)?.id || "").trim();
-            if (!postedMessageId) throw new Error("Discord did not return a message id.");
+          return NextResponse.json({
+            type: 4,
+            data: { content: `❌ Discord post failed.\n${e?.message || ""}`, flags: 64 },
+          });
+        }
 
-            const { error: updErr } = await supabaseAdmin
-              .from("sessions")
-              .update({ discord_channel_id: channelId, discord_message_id: postedMessageId } as any)
-              .eq("id", sessionId);
+        if (!postedMessageId) {
+          await supabaseAdmin.from("sessions").delete().eq("id", sessionId);
 
-            if (updErr) throw updErr;
+          return NextResponse.json({
+            type: 4,
+            data: { content: "❌ Discord did not return a message id.", flags: 64 },
+          });
+        }
 
-            await postToInteractionWebhook({
-              token,
-              content: `✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``,
+        // 5) Save message ids back to session
+        const { error: updErr } = await supabaseAdmin
+          .from("sessions")
+          .update({ discord_channel_id: channelId, discord_message_id: postedMessageId } as any)
+          .eq("id", sessionId);
+
+        if (updErr) {
+          return NextResponse.json({
+            type: 4,
+            data: {
+              content: `⚠️ Session posted, but failed to save Discord ids.\nSession: \`${sessionId}\`\n${updErr.message}`,
               flags: 64,
-            });
-          } catch (e: any) {
-  console.error("/rsvp failed:", e);
+            },
+          });
+        }
 
-  const msg =
-    typeof e?.message === "string" && e.message.trim()
-      ? e.message.trim()
-      : typeof e === "string"
-        ? e
-        : JSON.stringify(e);
-
-  await postToInteractionWebhook({
-    token,
-    content: `❌ RSVP failed:\n\`\`\`\n${msg.slice(0, 1500)}\n\`\`\``,
-    flags: 64,
-  });
-}
-
-        })();
-
-        return ack;
+        return NextResponse.json({
+          type: 4,
+          data: {
+            content: `✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``,
+            flags: 64,
+          },
+        });
       }
+
 
       void postToInteractionWebhook({ token, content: "Unknown command.", flags: 64 });
       return ack;
