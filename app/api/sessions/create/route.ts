@@ -18,6 +18,16 @@ function safeText(v: any, max: number) {
   return String(v ?? "").trim().slice(0, max);
 }
 
+function pickGuildId(body: any) {
+  const fromBody = safeText(body?.guildId, 64);
+  if (fromBody) return fromBody;
+
+  const fromEnv = safeText(process.env.NEXT_PUBLIC_DISCORD_GUILD_ID, 64);
+  if (fromEnv) return fromEnv;
+
+  return "";
+}
+
 async function postChannelMessageAsBot(params: { channelId: string; payload: any }) {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) throw new Error("DISCORD_BOT_TOKEN missing");
@@ -50,10 +60,7 @@ async function postChannelMessageAsBot(params: { channelId: string; payload: any
 export async function POST(req: Request) {
   const officer = await requireOfficer(req);
   if (!officer.ok) {
-    return NextResponse.json(
-      { error: officer.error || "Unauthorized" },
-      { status: officer.status || 401 }
-    );
+    return NextResponse.json({ error: officer.error || "Unauthorized" }, { status: officer.status || 401 });
   }
 
   let body: any = null;
@@ -63,13 +70,13 @@ export async function POST(req: Request) {
     body = null;
   }
 
-  const guildId = safeText(body?.guildId, 32);
+  const guildId = pickGuildId(body);
   const title = safeText(body?.title, MAX_TITLE);
   const startLocal = safeText(body?.startLocal, 64);
   const durationMinutes = asInt(body?.durationMinutes, 0);
   const notes = safeText(body?.notes, MAX_NOTES);
 
-  if (!guildId) return NextResponse.json({ error: "Missing guildId" }, { status: 400 });
+  if (!guildId) return NextResponse.json({ error: "Missing guildId (body.guildId or NEXT_PUBLIC_DISCORD_GUILD_ID)" }, { status: 400 });
   if (!title) return NextResponse.json({ error: "Missing title" }, { status: 400 });
   if (!startLocal) return NextResponse.json({ error: "Missing startLocal" }, { status: 400 });
 
@@ -91,6 +98,7 @@ export async function POST(req: Request) {
       start_local: startLocal,
       duration_minutes: durationMinutes,
       notes,
+      created_at: new Date().toISOString(),
     })
     .select("id")
     .single();
@@ -107,12 +115,13 @@ export async function POST(req: Request) {
     .from("discord_servers")
     .select("channel_id")
     .eq("guild_id", guildId)
-    .single();
+    .maybeSingle();
 
   if (serverErr || !serverRow?.channel_id) {
     return NextResponse.json({
       ok: true,
       id: sessionId,
+      guildId,
       posted: false,
       warning: "No Discord channel configured. Run /setup in Discord.",
     });
@@ -123,6 +132,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       id: sessionId,
+      guildId,
       posted: false,
       warning: "No Discord channel configured. Run /setup in Discord.",
     });
@@ -157,13 +167,14 @@ export async function POST(req: Request) {
 
     if (updErr) console.error("Failed to save discord ids to sessions:", updErr);
 
-    return NextResponse.json({ ok: true, id: sessionId, posted: true });
+    return NextResponse.json({ ok: true, id: sessionId, guildId, posted: true });
   } catch (e) {
     console.error("Discord post failed:", e);
 
     return NextResponse.json({
       ok: true,
       id: sessionId,
+      guildId,
       posted: false,
       warning: "Session created but failed to post to Discord. Check server logs.",
     });
