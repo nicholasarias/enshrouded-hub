@@ -7,20 +7,36 @@ function isSnowflake(id: string) {
 }
 
 export const { handlers, auth } = NextAuth({
+  // Always keep both supported. Env is handled in Vercel.
   secret: process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET,
+
   trustHost: true,
   session: { strategy: "jwt" },
 
-
-  providers: [
-    Discord({
-      clientId: process.env.DISCORD_CLIENT_ID!,
-      clientSecret: process.env.DISCORD_CLIENT_SECRET!,
-      authorization: { params: { scope: "identify email" } },
-    }),
-  ],
-
+  // Force auth to stay on one canonical origin.
+  // This prevents PKCE cookies being set on a preview host then read on prod (or vice versa).
   callbacks: {
+    async redirect({ url, baseUrl }) {
+      const canonical =
+        String(process.env.NEXTAUTH_URL || process.env.AUTH_URL || baseUrl || "").trim().replace(/\/+$/, "");
+
+      if (!canonical) return url;
+
+      // Relative paths always go to canonical
+      if (url.startsWith("/")) return `${canonical}${url}`;
+
+      // Absolute URLs: force same origin
+      try {
+        const target = new URL(url);
+        const canon = new URL(canonical);
+        target.protocol = canon.protocol;
+        target.host = canon.host;
+        return target.toString();
+      } catch {
+        return canonical;
+      }
+    },
+
     async jwt({ token, account, profile }) {
       // First sign in with Discord profile present
       if (account?.provider === "discord" && profile) {
@@ -47,9 +63,6 @@ export const { handlers, auth } = NextAuth({
       const discordGlobalName = (token as any).discordGlobalName || null;
       const discordAvatar = (token as any).discordAvatar || null;
 
-      // Put these in BOTH places:
-      // - session.discordUserId for your existing pages
-      // - session.user.* so any future code using session.user is consistent
       (session as any).discordUserId = isSnowflake(discordUserId) ? discordUserId : null;
       (session as any).discordUsername = discordUsername;
       (session as any).discordGlobalName = discordGlobalName;
@@ -57,14 +70,12 @@ export const { handlers, auth } = NextAuth({
 
       session.user = session.user || ({} as any);
 
-      // These are the fields your API routes try first in pickDiscordUserId()
       (session.user as any).discord_user_id = isSnowflake(discordUserId) ? discordUserId : null;
       (session.user as any).discordUserId = isSnowflake(discordUserId) ? discordUserId : null;
       (session.user as any).discordUsername = discordUsername;
       (session.user as any).discordGlobalName = discordGlobalName;
       (session.user as any).discordAvatar = discordAvatar;
 
-      // Helpful default display name
       if (!session.user.name) {
         session.user.name = discordGlobalName || discordUsername || session.user.name || null;
       }
@@ -119,4 +130,12 @@ export const { handlers, auth } = NextAuth({
       }
     },
   },
+
+  providers: [
+    Discord({
+      clientId: process.env.DISCORD_CLIENT_ID!,
+      clientSecret: process.env.DISCORD_CLIENT_SECRET!,
+      authorization: { params: { scope: "identify email" } },
+    }),
+  ],
 });
