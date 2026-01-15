@@ -599,26 +599,28 @@ export async function POST(req: Request) {
     }
 
     // 2) SLASH COMMANDS
-    if (body.type === 2) {
-      // ACK immediately (Discord times out fast)
-      const ack = NextResponse.json({ type: 5, data: { flags: 64 } });
+if (body.type === 2) {
+  // ACK immediately (Discord times out fast)
+  const ack = NextResponse.json({ type: 5, data: { flags: 64 } });
 
-      const commandName = body.data?.name;
-      console.log("DISCORD COMMAND NAME:", commandName, "RAW DATA:", body.data);
-      const token = String(body.token || "").trim();
+  const commandName = body.data?.name;
+  console.log("DISCORD COMMAND NAME:", commandName, "RAW DATA:", body.data);
+  const token = String(body.token || "").trim();
 
-      // Permission: always ACK, send message via webhook
-      if ((commandName === "setup" || commandName === "rsvp") && !hasManagePerms(body)) {
-        void postToInteractionWebhook({
-          token,
-          content: "You need Manage Server (or Admin) to use this command.",
-          flags: 64,
-        });
-        return ack;
-      }
+  // Permission: always ACK, send message via webhook
+  if ((commandName === "setup" || commandName === "rsvp") && !hasManagePerms(body)) {
+    void postToInteractionWebhook({
+      token,
+      content: "You need Manage Server (or Admin) to use this command.",
+      flags: 64,
+    });
+    return ack;
+  }
 
-      // /setup (RUN INLINE ON VERCEL, NO BACKGROUND ASYNC)
-      if (commandName === "setup") {
+  // Run the heavy work AFTER ACK so Discord never times out
+  if (commandName === "setup") {
+    void (async () => {
+      try {
         const supabaseAdmin = await getSupabaseAdmin();
 
         const guildId = String(body.guild_id || "").trim();
@@ -630,31 +632,39 @@ export async function POST(req: Request) {
         const officerRoleId = officerRoleIdRaw ? String(officerRoleIdRaw).trim() : "";
 
         if (!guildId || !isSnowflake(guildId)) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "This command must be used inside a Discord server (guild).", flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: "This command must be used inside a Discord server (guild).",
+            flags: 64,
           });
+          return;
         }
 
         if (!channelId && !officerRoleId) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "Missing options. Provide at least one: channel or officer_role.", flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: "Missing options. Provide at least one: channel or officer_role.",
+            flags: 64,
           });
+          return;
         }
 
         if (channelId && !isSnowflake(channelId)) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "Invalid channel id provided.", flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: "Invalid channel id provided.",
+            flags: 64,
           });
+          return;
         }
 
         if (officerRoleId && !isSnowflake(officerRoleId)) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "Invalid officer role id provided.", flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: "Invalid officer role id provided.",
+            flags: 64,
           });
+          return;
         }
 
         if (channelId) {
@@ -665,10 +675,12 @@ export async function POST(req: Request) {
           });
 
           if (error) {
-            return NextResponse.json({
-              type: 4,
-              data: { content: `❌ Failed to save channel.\n${error.message}`, flags: 64 },
+            await postToInteractionWebhook({
+              token,
+              content: `❌ Failed to save channel.\n${error.message}`,
+              flags: 64,
             });
+            return;
           }
         }
 
@@ -680,10 +692,12 @@ export async function POST(req: Request) {
           });
 
           if (error) {
-            return NextResponse.json({
-              type: 4,
-              data: { content: `❌ Failed to save officer role.\n${error.message}`, flags: 64 },
+            await postToInteractionWebhook({
+              token,
+              content: `❌ Failed to save officer role.\n${error.message}`,
+              flags: 64,
             });
+            return;
           }
         }
 
@@ -697,14 +711,27 @@ export async function POST(req: Request) {
         lines.push(`• Setup guide: ${hubLink("/setup", guildId)}`);
         lines.push(`• Manage users: ${hubLink("/roles/manage-users", guildId)}`);
 
-        return NextResponse.json({
-          type: 4,
-          data: { content: lines.join("\n"), flags: 64 },
+        await postToInteractionWebhook({
+          token,
+          content: lines.join("\n"),
+          flags: 64,
+        });
+      } catch (e: any) {
+        console.error("/setup crashed:", e);
+        await postToInteractionWebhook({
+          token,
+          content: "❌ Internal error running /setup. Check server logs.",
+          flags: 64,
         });
       }
+    })();
 
-      // /rsvp (RUN INLINE ON VERCEL, NO BACKGROUND ASYNC)
-      if (commandName === "rsvp") {
+    return ack;
+  }
+
+  if (commandName === "rsvp") {
+    void (async () => {
+      try {
         const supabaseAdmin = await getSupabaseAdmin();
         const { buildSessionEmbedPayload } = await getEmbedBuilder();
 
@@ -720,32 +747,40 @@ export async function POST(req: Request) {
         const notes = String(notesRaw || "").trim();
 
         if (!guildId) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "This command must be used in a server (guild).", flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: "This command must be used in a server (guild).",
+            flags: 64,
           });
+          return;
         }
 
         if (!title) {
-          return NextResponse.json({ type: 4, data: { content: "Missing title.", flags: 64 } });
+          await postToInteractionWebhook({ token, content: "Missing title.", flags: 64 });
+          return;
         }
 
         if (!whenInput) {
-          return NextResponse.json({ type: 4, data: { content: "Missing when.", flags: 64 } });
+          await postToInteractionWebhook({ token, content: "Missing when.", flags: 64 });
+          return;
         }
 
         if (!parsedWhen.ok) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: `Invalid when. ${parsedWhen.error}`, flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: `Invalid when. ${parsedWhen.error}`,
+            flags: 64,
           });
+          return;
         }
 
         if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "Duration must be a positive number of minutes.", flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: "Duration must be a positive number of minutes.",
+            flags: 64,
           });
+          return;
         }
 
         // 1) Find configured channel
@@ -756,18 +791,22 @@ export async function POST(req: Request) {
           .maybeSingle();
 
         if (serverErr) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: `❌ DB error loading setup.\n${serverErr.message}`, flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: `❌ DB error loading setup.\n${serverErr.message}`,
+            flags: 64,
           });
+          return;
         }
 
         const channelId = String((serverRow as any)?.channel_id || "").trim();
         if (!channelId) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "❌ No channel configured. Run `/setup` first and choose the posting channel.", flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: "❌ No channel configured. Run `/setup` first and choose the posting channel.",
+            flags: 64,
           });
+          return;
         }
 
         // 2) Create session in Supabase
@@ -785,10 +824,12 @@ export async function POST(req: Request) {
           .single();
 
         if (insErr || !inserted) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: `❌ Failed to create session.\n${insErr?.message || ""}`, flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: `❌ Failed to create session.\n${insErr?.message || ""}`,
+            flags: 64,
           });
+          return;
         }
 
         const sessionId = String((inserted as any).id);
@@ -808,8 +849,8 @@ export async function POST(req: Request) {
           badgeParts,
         });
 
+        // Static thumbnail helper (no user avatar)
         attachThumbnailToFirstEmbed(payload);
-
 
         // 4) Post to channel as bot
         let postedMessageId = "";
@@ -820,19 +861,23 @@ export async function POST(req: Request) {
           // rollback session row so you don't get orphan rows
           await supabaseAdmin.from("sessions").delete().eq("id", sessionId);
 
-          return NextResponse.json({
-            type: 4,
-            data: { content: `❌ Discord post failed.\n${e?.message || ""}`, flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: `❌ Discord post failed.\n${e?.message || ""}`,
+            flags: 64,
           });
+          return;
         }
 
         if (!postedMessageId) {
           await supabaseAdmin.from("sessions").delete().eq("id", sessionId);
 
-          return NextResponse.json({
-            type: 4,
-            data: { content: "❌ Discord did not return a message id.", flags: 64 },
+          await postToInteractionWebhook({
+            token,
+            content: "❌ Discord did not return a message id.",
+            flags: 64,
           });
+          return;
         }
 
         // 5) Save message ids back to session
@@ -842,27 +887,37 @@ export async function POST(req: Request) {
           .eq("id", sessionId);
 
         if (updErr) {
-          return NextResponse.json({
-            type: 4,
-            data: {
-              content: `⚠️ Session posted, but failed to save Discord ids.\nSession: \`${sessionId}\`\n${updErr.message}`,
-              flags: 64,
-            },
+          await postToInteractionWebhook({
+            token,
+            content: `⚠️ Session posted, but failed to save Discord ids.\nSession: \`${sessionId}\`\n${updErr.message}`,
+            flags: 64,
           });
+          return;
         }
 
-        return NextResponse.json({
-          type: 4,
-          data: {
-            content: `✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``,
-            flags: 64,
-          },
+        await postToInteractionWebhook({
+          token,
+          content: `✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``,
+          flags: 64,
+        });
+      } catch (e: any) {
+        console.error("/rsvp crashed:", e);
+        await postToInteractionWebhook({
+          token,
+          content: "❌ Internal error running /rsvp. Check server logs.",
+          flags: 64,
         });
       }
+    })();
 
-      void postToInteractionWebhook({ token, content: "Unknown command.", flags: 64 });
-      return ack;
-    }
+    return ack;
+  }
+
+  // Unknown command: respond after ACK
+  void postToInteractionWebhook({ token, content: "Unknown command.", flags: 64 });
+  return ack;
+}
+
 
     // 3) BUTTON CLICKS (INLINE on Vercel, return UPDATE_MESSAGE)
     if (body.type === 3) {
