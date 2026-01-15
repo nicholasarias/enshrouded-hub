@@ -193,7 +193,9 @@ export function buildSessionEmbedPayload(params: {
   const whenText = whenUnix ? `<t:${whenUnix}:f>  •  <t:${whenUnix}:R>` : formatChicagoPretty(startLocal);
 
   const baseUrl = getBaseUrl();
-  const hubUrl = `${baseUrl}/sessions/${encodeURIComponent(sessionId)}`;
+  const qs = guildId ? `?guildId=${encodeURIComponent(guildId)}` : "";
+  const hubUrl = `${baseUrl}/sessions/${encodeURIComponent(sessionId)}${qs}`;
+
 
   const inList = buildList({
     discordIds: inUsers,
