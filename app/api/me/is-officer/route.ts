@@ -1,5 +1,3 @@
-// app/api/me/is-officer/route.ts
-
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
@@ -41,9 +39,14 @@ function pickDiscordUserId(session: any): string | null {
 /**
  * GET /api/me/is-officer?guildId=...
  */
-export const GET = auth(async function GET(req) {
-  const session = (req as any).auth;
-  if (!session) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+export async function GET(req: Request) {
+  const session: any = await auth();
+
+  console.log("IS_OFFICER session?", Boolean(session), "user.id:", session?.user?.id);
+
+  if (!session) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
 
   const url = new URL(req.url);
   const guildId = String(url.searchParams.get("guildId") || "").trim();
@@ -75,7 +78,7 @@ export const GET = auth(async function GET(req) {
     }
   }
 
-  // Logged in but we cannot resolve a profile id -> not officer (no 401)
+  // Logged in but cannot resolve profile id -> not officer (no 401)
   if (!isUuid(profileId)) {
     return NextResponse.json({ ok: true, guildId, isOfficer: false }, { status: 200 });
   }
@@ -110,4 +113,4 @@ export const GET = auth(async function GET(req) {
   }
 
   return NextResponse.json({ ok: true, guildId, isOfficer: Boolean(link) }, { status: 200 });
-});
+}
