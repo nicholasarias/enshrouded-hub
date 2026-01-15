@@ -584,6 +584,7 @@ export async function POST(req: Request) {
       const ack = NextResponse.json({ type: 5, data: { flags: 64 } });
 
       const commandName = body.data?.name;
+      console.log("DISCORD COMMAND NAME:", commandName, "RAW DATA:", body.data);
       const token = String(body.token || "").trim();
 
       // Permission: always ACK, send message via webhook
