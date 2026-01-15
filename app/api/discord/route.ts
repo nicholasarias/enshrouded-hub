@@ -597,8 +597,10 @@ export async function POST(req: Request) {
         return ack;
       }
 
-      // /setup
+            // /setup (RUN INLINE ON VERCEL, NO BACKGROUND ASYNC)
       if (commandName === "setup") {
+        const supabaseAdmin = await getSupabaseAdmin();
+
         const guildId = String(body.guild_id || "").trim();
 
         const channelIdRaw = optionValue(body, "channel");
@@ -607,95 +609,80 @@ export async function POST(req: Request) {
         const channelId = channelIdRaw ? String(channelIdRaw).trim() : "";
         const officerRoleId = officerRoleIdRaw ? String(officerRoleIdRaw).trim() : "";
 
-        // background work
-        void (async () => {
-          try {
-                await postToInteractionWebhook({
-      token,
-      content: "⏳ Setup received. Working…",
-      flags: 64,
-    });
+        if (!guildId || !isSnowflake(guildId)) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "This command must be used inside a Discord server (guild).", flags: 64 },
+          });
+        }
 
-            const supabaseAdmin = await getSupabaseAdmin();
+        if (!channelId && !officerRoleId) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Missing options. Provide at least one: channel or officer_role.", flags: 64 },
+          });
+        }
 
-            if (!guildId || !isSnowflake(guildId)) {
-              await postToInteractionWebhook({
-                token,
-                content: "This command must be used inside a Discord server (guild).",
-                flags: 64,
-              });
-              return;
-            }
+        if (channelId && !isSnowflake(channelId)) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Invalid channel id provided.", flags: 64 },
+          });
+        }
 
-            if (!channelId && !officerRoleId) {
-              await postToInteractionWebhook({
-                token,
-                content: "Missing options. Provide at least one: channel or officer_role.",
-                flags: 64,
-              });
-              return;
-            }
+        if (officerRoleId && !isSnowflake(officerRoleId)) {
+          return NextResponse.json({
+            type: 4,
+            data: { content: "Invalid officer role id provided.", flags: 64 },
+          });
+        }
 
-            if (channelId && !isSnowflake(channelId)) {
-              await postToInteractionWebhook({ token, content: "Invalid channel id provided.", flags: 64 });
-              return;
-            }
+        if (channelId) {
+          const { error } = await supabaseAdmin.from("discord_servers").upsert({
+            guild_id: guildId,
+            channel_id: channelId,
+            updated_at: new Date().toISOString(),
+          });
 
-            if (officerRoleId && !isSnowflake(officerRoleId)) {
-              await postToInteractionWebhook({ token, content: "Invalid officer role id provided.", flags: 64 });
-              return;
-            }
+          if (error) {
+            return NextResponse.json({
+              type: 4,
+              data: { content: `❌ Failed to save channel.\n${error.message}`, flags: 64 },
+            });
+          }
+        }
 
-            if (channelId) {
-              await supabaseAdmin.from("discord_servers").upsert({
-                guild_id: guildId,
-                channel_id: channelId,
-                updated_at: new Date().toISOString(),
-              });
-            }
+        if (officerRoleId) {
+          const { error } = await supabaseAdmin.from("guild_settings").upsert({
+            guild_id: guildId,
+            officer_role_id: officerRoleId,
+            updated_at: new Date().toISOString(),
+          });
 
-            if (officerRoleId) {
-              await supabaseAdmin.from("guild_settings").upsert({
-                guild_id: guildId,
-                officer_role_id: officerRoleId,
-                updated_at: new Date().toISOString(),
-              });
-            }
+          if (error) {
+            return NextResponse.json({
+              type: 4,
+              data: { content: `❌ Failed to save officer role.\n${error.message}`, flags: 64 },
+            });
+          }
+        }
 
-            const lines: string[] = [];
-            lines.push("✅ Setup saved.");
-            if (channelId) lines.push(`• Post channel: <#${channelId}>`);
-            if (officerRoleId) lines.push(`• Officer role: <@&${officerRoleId}>`);
-            lines.push("");
-            lines.push("Hub links:");
-            lines.push(`• Roles: ${hubLink("/roles", guildId)}`);
-            lines.push(`• Setup guide: ${hubLink("/setup", guildId)}`);
-            lines.push(`• Manage users: ${hubLink("/roles/manage-users", guildId)}`);
-            lines.push("");
-            lines.push("If login issues happen, use one consistent host (ngrok OR localhost) to avoid cookie mismatch.");
+        const lines: string[] = [];
+        lines.push("✅ Setup saved.");
+        if (channelId) lines.push(`• Post channel: <#${channelId}>`);
+        if (officerRoleId) lines.push(`• Officer role: <@&${officerRoleId}>`);
+        lines.push("");
+        lines.push("Hub links:");
+        lines.push(`• Roles: ${hubLink("/roles", guildId)}`);
+        lines.push(`• Setup guide: ${hubLink("/setup", guildId)}`);
+        lines.push(`• Manage users: ${hubLink("/roles/manage-users", guildId)}`);
 
-            await postToInteractionWebhook({ token, content: lines.join("\n"), flags: 64 });
-          } catch (e: any) {
-  console.error("Setup save failed:", e);
-
-  const msg =
-    typeof e?.message === "string" && e.message.trim()
-      ? e.message.trim()
-      : typeof e === "string"
-        ? e
-        : JSON.stringify(e);
-
-  await postToInteractionWebhook({
-    token,
-    content: `❌ Setup failed:\n\`\`\`\n${msg.slice(0, 1500)}\n\`\`\``,
-    flags: 64,
-  });
-}
-
-        })();
-
-        return ack;
+        return NextResponse.json({
+          type: 4,
+          data: { content: lines.join("\n"), flags: 64 },
+        });
       }
+
 
       // /rsvp
       if (commandName === "rsvp") {
