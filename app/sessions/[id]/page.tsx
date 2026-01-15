@@ -3,7 +3,6 @@ export const revalidate = 0;
 
 import SessionDetailClient from "./session-detail-client";
 
-
 type BadgeParts = { combat: string; logistics: string };
 
 type RsvpItem = {
@@ -28,34 +27,43 @@ type DetailResponse = {
   rosters: { in: RsvpItem[]; maybe: RsvpItem[]; out: RsvpItem[] };
 };
 
-function getBaseUrl() {
-  const fromEnv =
-    process.env.NEXT_PUBLIC_BASE_URL ||
-    process.env.VERCEL_URL ||
-    process.env.NEXT_PUBLIC_VERCEL_URL;
+async function getDetail(params: { sessionId: string; guildId?: string | null }): Promise<DetailResponse | null> {
+  const sessionId = String(params.sessionId || "").trim();
+  const guildId = String(params.guildId || "").trim();
 
-  if (fromEnv) return fromEnv.startsWith("http") ? fromEnv : `https://${fromEnv}`;
-  return "http://localhost:3000";
-}
+  if (!sessionId) return null;
 
-async function getDetail(sessionId: string): Promise<DetailResponse | null> {
-  const baseUrl = getBaseUrl();
-  const res = await fetch(
-    `${baseUrl}/api/sessions/detail?sessionId=${encodeURIComponent(sessionId)}`,
-    { cache: "no-store" }
-  );
+  const qs = new URLSearchParams();
+  qs.set("sessionId", sessionId);
+  if (guildId) qs.set("guildId", guildId);
+
+  // Use relative URL so Vercel always hits the same deployment host correctly
+  const res = await fetch(`/api/sessions/detail?${qs.toString()}`, { cache: "no-store" });
   if (!res.ok) return null;
+
   return res.json();
 }
 
-export default async function SessionDetailPage(props: { params: Promise<{ id: string }> | { id: string } }) {
+export default async function SessionDetailPage(props: {
+  params: Promise<{ id: string }> | { id: string };
+  searchParams?: Promise<Record<string, string | string[] | undefined>> | Record<string, string | string[] | undefined>;
+}) {
   const resolvedParams =
     typeof (props.params as any)?.then === "function"
       ? await (props.params as Promise<{ id: string }>)
       : (props.params as { id: string });
 
+  const resolvedSearchParams =
+    props.searchParams && typeof (props.searchParams as any)?.then === "function"
+      ? await (props.searchParams as Promise<Record<string, string | string[] | undefined>>)
+      : (props.searchParams as Record<string, string | string[] | undefined>) || {};
+
   const sessionId = String(resolvedParams?.id || "").trim();
-  const data = await getDetail(sessionId);
+
+  const guildIdRaw = resolvedSearchParams.guildId;
+  const guildId = Array.isArray(guildIdRaw) ? String(guildIdRaw[0] || "") : String(guildIdRaw || "");
+
+  const data = await getDetail({ sessionId, guildId });
 
   return <SessionDetailClient data={data} />;
 }

@@ -471,9 +471,7 @@ function RosterRow(props: { u: RsvpItem; showIds: boolean }) {
             padding: "8px 10px",
             borderRadius: 999,
             border: `1px solid ${THEME.stoneBorder}`,
-            background: copied
-              ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})`
-              : "rgba(12,14,18,0.6)",
+            background: copied ? `linear-gradient(90deg, ${THEME.flameAmber}, ${THEME.flameGold})` : "rgba(12,14,18,0.6)",
             color: copied ? "#111" : THEME.textSilver,
             cursor: "pointer",
             fontWeight: 950,
@@ -498,7 +496,7 @@ function RosterList(props: { items: RsvpItem[]; showIds: boolean }) {
     const A = rosterSortKey(a);
     const B = rosterSortKey(b);
 
-    if (A.miss !== B.miss) return A.miss - B.miss; // missing first
+    if (A.miss !== B.miss) return A.miss - B.miss;
     if (A.combat !== B.combat) return A.combat.localeCompare(B.combat);
     if (A.logi !== B.logi) return A.logi.localeCompare(B.logi);
     return A.name.localeCompare(B.name);
@@ -558,108 +556,8 @@ export default function SessionDetailClient(props: { data: DetailResponse }) {
           >
             Session not found
           </div>
+
           <ActionLink href="/sessions">Back</ActionLink>
-          <button
-  type="button"
-  onClick={() => {
-    const t = window.prompt("New title", s.title || "");
-    if (t === null) return;
-
-    const when = window.prompt("New startLocal (ISO or yyyy-mm-ddThh:mm)", s.startLocal || "");
-    if (when === null) return;
-
-    const durStr = window.prompt("New durationMinutes", String(s.durationMinutes || 90));
-    if (durStr === null) return;
-
-    const n = window.prompt("New notes", s.notes || "");
-    if (n === null) return;
-
-    const dur = Number(durStr) || 0;
-
-    (async () => {
-      try {
-        const res = await fetch("/api/sessions/update", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionId: s.id,
-            title: t,
-            startLocal: when,
-            durationMinutes: dur,
-            notes: n,
-          }),
-        });
-
-        if (!res.ok) {
-          const j = await res.json().catch(() => ({}));
-          throw new Error(j.error || "Failed to update");
-        }
-
-        window.location.reload();
-      } catch (e: any) {
-        alert(e?.message || "Update failed");
-      }
-    })();
-  }}
-  style={{
-    padding: "10px 12px",
-    borderRadius: 8,
-    border: `1px solid ${THEME.stoneBorder}`,
-    background: "rgba(12,14,18,0.6)",
-    color: THEME.textSilver,
-    cursor: "pointer",
-    fontWeight: 950,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    fontSize: 12,
-    whiteSpace: "nowrap",
-  }}
->
-  Edit
-</button>
-
-<button
-  type="button"
-  onClick={() => {
-    const ok = window.confirm("Delete this session and all RSVPs. This cannot be undone.");
-    if (!ok) return;
-
-    (async () => {
-      try {
-        const res = await fetch("/api/sessions/delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: s.id }),
-        });
-
-        if (!res.ok) {
-          const j = await res.json().catch(() => ({}));
-          throw new Error(j.error || "Failed to delete");
-        }
-
-        window.location.href = "/sessions";
-      } catch (e: any) {
-        alert(e?.message || "Delete failed");
-      }
-    })();
-  }}
-  style={{
-    padding: "10px 12px",
-    borderRadius: 8,
-    border: `1px solid ${THEME.stoneBorder}`,
-    background: "rgba(42,11,11,0.55)",
-    color: THEME.textSilver,
-    cursor: "pointer",
-    fontWeight: 950,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    fontSize: 12,
-    whiteSpace: "nowrap",
-  }}
->
-  Delete
-</button>
-
         </div>
       </div>
     );
