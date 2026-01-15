@@ -930,7 +930,11 @@ if (body.type === 3) {
     });
 
     // 3) Update the message directly as the interaction response
-    return NextResponse.json({ type: 7, data: payload });
+    return NextResponse.json({
+  type: 7,
+  data: (payload as any)?.data ? (payload as any).data : payload,
+});
+
   } catch (e) {
     console.error("Button handler crashed:", e);
     return NextResponse.json({ type: 6 });

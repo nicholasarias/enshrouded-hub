@@ -1,3 +1,5 @@
+// app/api/me/is-officer/route.ts
+
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
@@ -10,6 +12,12 @@ function isSnowflake(id: string) {
   return /^\d{10,25}$/.test(String(id || "").trim());
 }
 
+function isUuid(id: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(id || "").trim()
+  );
+}
+
 function pickDiscordUserId(session: any): string | null {
   const user = session?.user;
 
@@ -18,7 +26,6 @@ function pickDiscordUserId(session: any): string | null {
     user?.discordUserId,
     user?.discordId,
     user?.providerAccountId,
-    user?.id,
     user?.sub,
     session?.discordUserId,
     session?.providerAccountId,
@@ -45,23 +52,31 @@ export const GET = auth(async function GET(req) {
     return NextResponse.json({ ok: false, error: "Missing or invalid guildId" }, { status: 400 });
   }
 
-  const discordUserId = pickDiscordUserId(session);
-  if (!discordUserId) {
-    return NextResponse.json({ ok: false, error: "Missing discord user id in session" }, { status: 401 });
+  // Prefer profile UUID from session (matches user_guild_roles.user_id)
+  let profileId = String(session?.user?.id || "").trim();
+
+  // If session.user.id is not a UUID, fall back to mapping discord id -> profile id
+  if (!isUuid(profileId)) {
+    const discordUserId = pickDiscordUserId(session);
+
+    if (discordUserId) {
+      const { data: prof, error: profErr } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("discord_user_id", discordUserId)
+        .maybeSingle();
+
+      if (profErr) {
+        console.error("profiles lookup failed:", profErr);
+        return NextResponse.json({ ok: false, error: "Profile lookup failed" }, { status: 500 });
+      }
+
+      profileId = String((prof as any)?.id || "").trim();
+    }
   }
 
-  const { data: prof, error: profErr } = await supabaseAdmin
-    .from("profiles")
-    .select("id")
-    .eq("discord_user_id", discordUserId)
-    .maybeSingle();
-
-  if (profErr) {
-    console.error("profiles lookup failed:", profErr);
-    return NextResponse.json({ ok: false, error: "Profile lookup failed" }, { status: 500 });
-  }
-
-  if (!prof?.id) {
+  // Logged in but we cannot resolve a profile id -> not officer (no 401)
+  if (!isUuid(profileId)) {
     return NextResponse.json({ ok: true, guildId, isOfficer: false }, { status: 200 });
   }
 
@@ -85,7 +100,7 @@ export const GET = auth(async function GET(req) {
     .from("user_guild_roles")
     .select("role_id")
     .eq("guild_id", guildId)
-    .eq("user_id", String(prof.id))
+    .eq("user_id", profileId)
     .eq("role_id", officerRoleId)
     .maybeSingle();
 
