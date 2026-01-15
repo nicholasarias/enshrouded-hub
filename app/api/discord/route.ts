@@ -1,13 +1,37 @@
-// web/app/api/discord/route.ts
+// app/api/discord/route.ts
 
 import { NextResponse } from "next/server";
 import nacl from "tweetnacl";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { DateTime } from "luxon";
-import { buildSessionEmbedPayload, type BadgeParts } from "@/lib/discordSessionEmbed";
+import type { BadgeParts } from "@/lib/discordSessionEmbed";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+export const runtime = "nodejs";
+
+// =======================================================
+// Lazy loaders (reduce cold start so Discord ACK is fast)
+// =======================================================
+let _supabaseAdmin: any = null;
+async function getSupabaseAdmin() {
+  if (_supabaseAdmin) return _supabaseAdmin;
+  const mod = await import("@/lib/supabaseAdmin");
+  _supabaseAdmin = mod.supabaseAdmin;
+  return _supabaseAdmin;
+}
+
+let _luxon: any = null;
+async function getLuxon() {
+  if (_luxon) return _luxon;
+  _luxon = await import("luxon");
+  return _luxon;
+}
+
+let _embedMod: any = null;
+async function getEmbedBuilder() {
+  if (_embedMod) return _embedMod;
+  _embedMod = await import("@/lib/discordSessionEmbed");
+  return _embedMod;
+}
 
 // =======================================================
 // Discord request verification
@@ -27,8 +51,6 @@ function verifyDiscordRequest(req: Request, body: string, signature: string, tim
 // Permission helpers (Discord built-in permissions)
 // Works without BigInt / ES2020
 // =======================================================
-
-// Discord permission bit values (decimal strings from Discord API)
 const PERM_ADMINISTRATOR = 8; // 0x8
 const PERM_MANAGE_GUILD = 32; // 0x20
 
@@ -54,7 +76,6 @@ function cleanBaseUrl(url: string) {
 }
 
 function getPublicBaseUrl() {
-  // Prefer explicit app URL (ngrok / prod domain)
   const explicit =
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.APP_URL ||
@@ -85,11 +106,6 @@ function normalizeGroupKey(groupKey: string) {
   return g;
 }
 
-/**
- * Group key -> icon
- * Combat: strength / intelligence / dexterity
- * Logistics: architect / agronomist / quartermaster / provisioner / excavator
- */
 function groupIcon(groupKey: string) {
   const g = normalizeGroupKey(groupKey);
 
@@ -105,33 +121,30 @@ function groupIcon(groupKey: string) {
   if (g === "provisioner") return "🍲";
   if (g === "excavator") return "⛏️";
 
-  // Backward compatible fallback
   if (g === "logistics") return "🧰";
-
   return "❔";
 }
 
 const CHI_ZONE = "America/Chicago";
 
-function parseWhenToChicagoIso(inputRaw: string) {
+async function parseWhenToChicagoIso(inputRaw: string) {
+  const { DateTime } = await getLuxon();
+
   const input = String(inputRaw || "").trim();
   if (!input) return { ok: false as const, error: "Missing when." };
 
   const now = DateTime.now().setZone(CHI_ZONE);
 
-  // 1) Try ISO first (best)
+  // 1) ISO
   let dt = DateTime.fromISO(input, { setZone: true });
   if (dt.isValid) {
     dt = dt.setZone(CHI_ZONE);
     return { ok: true as const, iso: dt.toISO()! };
   }
 
-  // Normalize common inputs
   const s = input.toLowerCase().replace(/\s+/g, " ").trim();
 
-  // Helpers
   const parseTimeOnly = (timeStr: string) => {
-    // Accept: 8pm, 8:30pm, 20:30, 8:30 pm
     const cleaned = timeStr.replace(/\s/g, "");
     const m = cleaned.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)?$/);
     if (!m) return null;
@@ -153,10 +166,10 @@ function parseWhenToChicagoIso(inputRaw: string) {
     return { hour: h, minute: min };
   };
 
-  const applyTime = (base: DateTime, t: { hour: number; minute: number }) =>
+  const applyTime = (base: any, t: { hour: number; minute: number }) =>
     base.set({ hour: t.hour, minute: t.minute, second: 0, millisecond: 0 });
 
-  // 2) "tomorrow 7pm" / "today 8:30pm"
+  // 2) today/tomorrow
   {
     const m = s.match(/^(today|tomorrow)\s+(.+)$/);
     if (m) {
@@ -170,7 +183,7 @@ function parseWhenToChicagoIso(inputRaw: string) {
     }
   }
 
-  // 3) "fri 9pm" / "friday 21:00"
+  // 3) weekday
   {
     const m = s.match(
       /^(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+(.+)$/
@@ -203,7 +216,6 @@ function parseWhenToChicagoIso(inputRaw: string) {
       const target = map[dayStr] || 0;
       if (!target) return { ok: false as const, error: `Could not parse day: "${dayStr}"` };
 
-      // Luxon: Monday=1 ... Sunday=7
       let base = now;
       const daysAhead = (target - base.weekday + 7) % 7;
       base = daysAhead === 0 ? base : base.plus({ days: daysAhead });
@@ -215,7 +227,7 @@ function parseWhenToChicagoIso(inputRaw: string) {
     }
   }
 
-  // 4) "1/14 6pm" or "01/14 18:00" (assume current year)
+  // 4) M/D time
   {
     const m = s.match(/^(\d{1,2})\/(\d{1,2})\s+(.+)$/);
     if (m) {
@@ -239,7 +251,7 @@ function parseWhenToChicagoIso(inputRaw: string) {
     }
   }
 
-  // 5) "2026-01-14 6pm" or "2026-01-14 18:00"
+  // 5) YYYY-MM-DD time
   {
     const m = s.match(/^(\d{4}-\d{2}-\d{2})\s+(.+)$/);
     if (m) {
@@ -255,7 +267,7 @@ function parseWhenToChicagoIso(inputRaw: string) {
     }
   }
 
-  // 6) Time only: "8:30pm" or "20:30" (assume today or tomorrow if already passed)
+  // 6) Time only
   {
     const time = parseTimeOnly(s);
     if (time) {
@@ -275,16 +287,14 @@ function parseWhenToChicagoIso(inputRaw: string) {
 // Badge loading (Discord user id -> hub role icons)
 // =======================================================
 async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discordIds: string[] }) {
+  const supabaseAdmin = await getSupabaseAdmin();
+
   const { guildId, discordIds } = params;
   const result = new Map<string, BadgeParts>();
 
-  for (const id of discordIds) {
-    result.set(id, { combat: "❔", logistics: "❔" });
-  }
-
+  for (const id of discordIds) result.set(id, { combat: "❔", logistics: "❔" });
   if (!discordIds.length) return result;
 
-  // 1) Map discord_user_id -> profiles.id (uuid)
   const { data: profs, error: profErr } = await supabaseAdmin
     .from("profiles")
     .select("id, discord_user_id")
@@ -308,7 +318,6 @@ async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discor
 
   if (!profileIds.length) return result;
 
-  // 2) Load hub selections by profiles.id (uuid)
   const { data: selections, error: selErr } = await supabaseAdmin
     .from("user_hub_roles")
     .select("user_id, role_kind, role_id")
@@ -320,7 +329,6 @@ async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discor
     return result;
   }
 
-  // profileId -> { combatRoleId, logisticsRoleId }
   const perProfile = new Map<string, { combatRoleId: string | null; logisticsRoleId: string | null }>();
 
   for (const row of selections ?? []) {
@@ -363,7 +371,6 @@ async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discor
     }
   }
 
-  // 3) Build badge parts per discord id
   for (const [discordId, profileId] of discordToProfile.entries()) {
     const sel = perProfile.get(profileId) || { combatRoleId: null, logisticsRoleId: null };
 
@@ -373,7 +380,6 @@ async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discor
     const combatIcon = combatGroup ? groupIcon(combatGroup) : "❔";
     const logiIcon = logiGroup ? groupIcon(logiGroup) : "❔";
 
-    // Shared embed builder expects only valid combat icons
     const safeCombat = combatIcon === "🛡" || combatIcon === "🧙" || combatIcon === "🏹" ? combatIcon : "❔";
     const safeLogi = logiIcon || "❔";
 
@@ -425,10 +431,7 @@ async function postChannelMessageAsBot(params: { channelId: string; payload: any
     throw new Error(`Discord post message returned non JSON: HTTP ${res.status} ${text}`);
   }
 
-  if (!res.ok) {
-    throw new Error(`Discord post message failed: HTTP ${res.status} ${text}`);
-  }
-
+  if (!res.ok) throw new Error(`Discord post message failed: HTTP ${res.status} ${text}`);
   return json;
 }
 
@@ -460,6 +463,9 @@ async function patchChannelMessageAsBot(params: { channelId: string; messageId: 
 // RSVP message refresh (used for button clicks)
 // =======================================================
 async function updatePostedSessionMessage(params: { sessionId: string }) {
+  const supabaseAdmin = await getSupabaseAdmin();
+  const { buildSessionEmbedPayload } = await getEmbedBuilder();
+
   const { sessionId } = params;
 
   const { data: session, error: sessionErr } = await supabaseAdmin
@@ -561,22 +567,25 @@ export async function POST(req: Request) {
 
     // 2) SLASH COMMANDS
     if (body.type === 2) {
-      const commandName = body.data?.name;
+      // ACK immediately (Discord times out fast)
+      const ack = NextResponse.json({ type: 5, data: { flags: 64 } });
 
-      // Require manage perms for setup + creating sessions
+      const commandName = body.data?.name;
+      const token = String(body.token || "").trim();
+
+      // Permission: always ACK, send message via webhook
       if ((commandName === "setup" || commandName === "rsvp") && !hasManagePerms(body)) {
-        return NextResponse.json({
-          type: 4,
-          data: { content: "You need Manage Server (or Admin) to use this command.", flags: 64 },
+        void postToInteractionWebhook({
+          token,
+          content: "You need Manage Server (or Admin) to use this command.",
+          flags: 64,
         });
+        return ack;
       }
 
-      // -----------------------------
       // /setup
-      // -----------------------------
       if (commandName === "setup") {
         const guildId = String(body.guild_id || "").trim();
-        const token = String(body.token || "").trim();
 
         const channelIdRaw = optionValue(body, "channel");
         const officerRoleIdRaw = optionValue(body, "officer_role");
@@ -584,41 +593,39 @@ export async function POST(req: Request) {
         const channelId = channelIdRaw ? String(channelIdRaw).trim() : "";
         const officerRoleId = officerRoleIdRaw ? String(officerRoleIdRaw).trim() : "";
 
-        if (!guildId || !isSnowflake(guildId)) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "This command must be used inside a Discord server (guild).", flags: 64 },
-          });
-        }
-
-        if (!channelId && !officerRoleId) {
-          return NextResponse.json({
-            type: 4,
-            data: {
-              content: "Missing options. Provide at least one: channel or officer_role.",
-              flags: 64,
-            },
-          });
-        }
-
-        if (channelId && !isSnowflake(channelId)) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "Invalid channel id provided.", flags: 64 },
-          });
-        }
-
-        if (officerRoleId && !isSnowflake(officerRoleId)) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "Invalid officer role id provided.", flags: 64 },
-          });
-        }
-
-        // Defer immediately, then save in background
+        // background work
         void (async () => {
           try {
-            // Save posting channel (existing behavior)
+            const supabaseAdmin = await getSupabaseAdmin();
+
+            if (!guildId || !isSnowflake(guildId)) {
+              await postToInteractionWebhook({
+                token,
+                content: "This command must be used inside a Discord server (guild).",
+                flags: 64,
+              });
+              return;
+            }
+
+            if (!channelId && !officerRoleId) {
+              await postToInteractionWebhook({
+                token,
+                content: "Missing options. Provide at least one: channel or officer_role.",
+                flags: 64,
+              });
+              return;
+            }
+
+            if (channelId && !isSnowflake(channelId)) {
+              await postToInteractionWebhook({ token, content: "Invalid channel id provided.", flags: 64 });
+              return;
+            }
+
+            if (officerRoleId && !isSnowflake(officerRoleId)) {
+              await postToInteractionWebhook({ token, content: "Invalid officer role id provided.", flags: 64 });
+              return;
+            }
+
             if (channelId) {
               await supabaseAdmin.from("discord_servers").upsert({
                 guild_id: guildId,
@@ -627,7 +634,6 @@ export async function POST(req: Request) {
               });
             }
 
-            // Save officer role (new behavior, in guild_settings)
             if (officerRoleId) {
               await supabaseAdmin.from("guild_settings").upsert({
                 guild_id: guildId,
@@ -638,81 +644,73 @@ export async function POST(req: Request) {
 
             const lines: string[] = [];
             lines.push("✅ Setup saved.");
-
             if (channelId) lines.push(`• Post channel: <#${channelId}>`);
             if (officerRoleId) lines.push(`• Officer role: <@&${officerRoleId}>`);
-
             lines.push("");
             lines.push("Hub links:");
             lines.push(`• Roles: ${hubLink("/roles", guildId)}`);
             lines.push(`• Setup guide: ${hubLink("/setup", guildId)}`);
             lines.push(`• Manage users: ${hubLink("/roles/manage-users", guildId)}`);
-
-            // Small heads up for auth cookie problems when using ngrok
             lines.push("");
             lines.push("If login issues happen, use one consistent host (ngrok OR localhost) to avoid cookie mismatch.");
 
             await postToInteractionWebhook({ token, content: lines.join("\n"), flags: 64 });
           } catch (e) {
             console.error("Setup save failed:", e);
-            await postToInteractionWebhook({
-              token,
-              content: "❌ Failed to save setup. Check server logs.",
-              flags: 64,
-            });
+            await postToInteractionWebhook({ token, content: "❌ Failed to save setup. Check server logs.", flags: 64 });
           }
         })();
 
-        return NextResponse.json({ type: 5, data: { flags: 64 } });
+        return ack;
       }
 
-      // -----------------------------
-      // /rsvp (CREATE session + post)
-      // -----------------------------
+      // /rsvp
       if (commandName === "rsvp") {
-        const guildId = String(body.guild_id || "").trim();
-        const token = String(body.token || "").trim();
-
-        const title = String(optionValue(body, "title") || "").trim();
-        const whenInput = String(optionValue(body, "when") || "").trim();
-        const parsedWhen = parseWhenToChicagoIso(whenInput);
-        const when = parsedWhen.ok ? parsedWhen.iso : "";
-
-        const durationMinutes = Number(optionValue(body, "duration") || 0);
-        const notesRaw = optionValue(body, "notes");
-        const notes = String(notesRaw || "").trim();
-
-        if (!guildId) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "This command must be used in a server (guild).", flags: 64 },
-          });
-        }
-
-        if (!title) {
-          return NextResponse.json({ type: 4, data: { content: "Missing title.", flags: 64 } });
-        }
-
-        if (!whenInput) {
-          return NextResponse.json({ type: 4, data: { content: "Missing when.", flags: 64 } });
-        }
-        if (!parsedWhen.ok) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: `Invalid when. ${parsedWhen.error}`, flags: 64 },
-          });
-        }
-
-        if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-          return NextResponse.json({
-            type: 4,
-            data: { content: "Duration must be a positive number of minutes.", flags: 64 },
-          });
-        }
-
-        // Defer immediately (ephemeral), then do the work
         void (async () => {
           try {
+            const supabaseAdmin = await getSupabaseAdmin();
+            const { buildSessionEmbedPayload } = await getEmbedBuilder();
+
+            const guildId = String(body.guild_id || "").trim();
+
+            const title = String(optionValue(body, "title") || "").trim();
+            const whenInput = String(optionValue(body, "when") || "").trim();
+            const parsedWhen = await parseWhenToChicagoIso(whenInput);
+            const when = parsedWhen.ok ? parsedWhen.iso : "";
+
+            const durationMinutes = Number(optionValue(body, "duration") || 0);
+            const notesRaw = optionValue(body, "notes");
+            const notes = String(notesRaw || "").trim();
+
+            if (!guildId) {
+              await postToInteractionWebhook({ token, content: "This command must be used in a server (guild).", flags: 64 });
+              return;
+            }
+
+            if (!title) {
+              await postToInteractionWebhook({ token, content: "Missing title.", flags: 64 });
+              return;
+            }
+
+            if (!whenInput) {
+              await postToInteractionWebhook({ token, content: "Missing when.", flags: 64 });
+              return;
+            }
+
+            if (!parsedWhen.ok) {
+              await postToInteractionWebhook({ token, content: `Invalid when. ${parsedWhen.error}`, flags: 64 });
+              return;
+            }
+
+            if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+              await postToInteractionWebhook({
+                token,
+                content: "Duration must be a positive number of minutes.",
+                flags: 64,
+              });
+              return;
+            }
+
             // 1) Find configured channel
             const { data: serverRow, error: serverErr } = await supabaseAdmin
               .from("discord_servers")
@@ -721,6 +719,7 @@ export async function POST(req: Request) {
               .maybeSingle();
 
             if (serverErr) throw serverErr;
+
             const channelId = String((serverRow as any)?.channel_id || "").trim();
             if (!channelId) {
               await postToInteractionWebhook({
@@ -731,7 +730,7 @@ export async function POST(req: Request) {
               return;
             }
 
-            // 2) Create session in Supabase
+            // 2) Create session
             const { data: inserted, error: insErr } = await supabaseAdmin
               .from("sessions")
               .insert({
@@ -749,7 +748,7 @@ export async function POST(req: Request) {
 
             const sessionId = String((inserted as any).id);
 
-            // 3) Build initial payload (no RSVPs yet)
+            // 3) Build initial embed payload
             const badgeParts = new Map<string, BadgeParts>();
             const payload = buildSessionEmbedPayload({
               sessionId,
@@ -764,29 +763,18 @@ export async function POST(req: Request) {
               badgeParts,
             });
 
-            // 4) Post to channel as bot (and save message ids)
+            // 4) Post message and store ids
             const posted = await postChannelMessageAsBot({ channelId, payload });
             const postedMessageId = String((posted as any)?.id || "").trim();
-
-            if (!postedMessageId) {
-              console.error("Failed to read posted message id from Discord response:", posted);
-              throw new Error("Discord did not return a message id.");
-            }
+            if (!postedMessageId) throw new Error("Discord did not return a message id.");
 
             const { error: updErr } = await supabaseAdmin
               .from("sessions")
-              .update({
-                discord_channel_id: channelId,
-                discord_message_id: postedMessageId,
-              } as any)
+              .update({ discord_channel_id: channelId, discord_message_id: postedMessageId } as any)
               .eq("id", sessionId);
 
-            if (updErr) {
-              console.error("Failed to save discord ids to sessions:", updErr);
-              throw updErr;
-            }
+            if (updErr) throw updErr;
 
-            // 5) Confirm to the command user
             await postToInteractionWebhook({
               token,
               content: `✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``,
@@ -802,13 +790,14 @@ export async function POST(req: Request) {
           }
         })();
 
-        return NextResponse.json({ type: 5, data: { flags: 64 } });
+        return ack;
       }
 
-      return NextResponse.json({ type: 4, data: { content: "Unknown command.", flags: 64 } });
+      void postToInteractionWebhook({ token, content: "Unknown command.", flags: 64 });
+      return ack;
     }
 
-    // 3) BUTTON CLICKS (RSVP)
+    // 3) BUTTON CLICKS
     if (body.type === 3) {
       const customId = String(body.data?.custom_id || "");
       if (!customId.startsWith("rsvp:")) return NextResponse.json({ type: 6 });
@@ -821,9 +810,10 @@ export async function POST(req: Request) {
         return NextResponse.json({ type: 6 });
       }
 
-      // Defer immediately, then update message in background
       void (async () => {
         try {
+          const supabaseAdmin = await getSupabaseAdmin();
+
           await supabaseAdmin.from("session_rsvps").upsert(
             {
               session_id: sessionId,
@@ -848,10 +838,7 @@ export async function POST(req: Request) {
     console.error("POST crashed:", e);
     return NextResponse.json({
       type: 4,
-      data: {
-        content: "❌ Internal error. Check server logs.",
-        flags: 64,
-      },
+      data: { content: "❌ Internal error. Check server logs.", flags: 64 },
     });
   }
 }
