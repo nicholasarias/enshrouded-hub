@@ -117,6 +117,15 @@ function roleIcon(role: Pick<RoleMeta, "role_kind" | "group_key">) {
   return "🧰";
 }
 
+function friendlyErrorMessage(message: unknown) {
+  const text = String(message || "").trim();
+  if (!text) return "";
+  if (/^unauthorized/i.test(text)) {
+    return "You need to sign in to access this page. Go to the Dashboard to sign in.";
+  }
+  return text;
+}
+
 // --- Top Bar ---
 function TopBar(props: { discordName: string | null; level: number; guildId: string; isOfficer: boolean }) {
   const tierLabel = props.level === 2 ? "Flameborn" : props.level === 1 ? "Kindled" : "Unbound";
@@ -958,7 +967,7 @@ export default function RolesClient(props: { guildId: string; theme: any }) {
 
       setDiscordName(name);
     } catch (e: any) {
-      setError(e?.message || "The Shroud obscures your path. (Failed to load)");
+      setError(friendlyErrorMessage(e?.message) || "The Shroud obscures your path. (Failed to load)");
     } finally {
       setLoading(false);
     }
@@ -1005,7 +1014,7 @@ export default function RolesClient(props: { guildId: string; theme: any }) {
 
       await loadAll();
     } catch (e: any) {
-      setError(e?.message || "The Flame flickers. Selection failed.");
+      setError(friendlyErrorMessage(e?.message) || "The Flame flickers. Selection failed.");
     } finally {
       setSavingRoleId(null);
     }
@@ -1035,7 +1044,7 @@ export default function RolesClient(props: { guildId: string; theme: any }) {
       if (!res.ok) throw new Error(json?.error || "Reset failed.");
       showToast("Roles reset", `Cleared hub roles for <@${did}>`);
     } catch (e: any) {
-      setError(e?.message || "Reset failed.");
+      setError(friendlyErrorMessage(e?.message) || "Reset failed.");
     }
   }
 
@@ -1062,7 +1071,7 @@ export default function RolesClient(props: { guildId: string; theme: any }) {
       if (!res.ok) throw new Error(json?.error || "Set role failed.");
       showToast("Role assigned", `Updated hub role for <@${did}>`);
     } catch (e: any) {
-      setError(e?.message || "Set role failed.");
+      setError(friendlyErrorMessage(e?.message) || "Set role failed.");
     }
   }
 
