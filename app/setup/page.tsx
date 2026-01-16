@@ -339,6 +339,16 @@ export default async function SetupPage(props: {
         </div>
 
         <div style={{ display: "grid", gap: 14 }}>
+          <StoneSection title="Read This First">
+            <P>Sign in with Discord on the exact domain you will use for the hub (production or localhost).</P>
+            <P>Mixing domains can break the login handshake and block officer checks.</P>
+
+            <Note kind="warn">
+              If Discord will not link or you get stuck in a login loop, clear cookies/site data for this hub domain and for
+              discord.com, then sign in again.
+            </Note>
+          </StoneSection>
+
           <StoneSection title="What Enshrouded Hub Does">
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               <Li>Members pick one Combat role and one Logistics role</Li>
@@ -358,6 +368,7 @@ export default async function SetupPage(props: {
               <Li>You are a Discord server admin or you can manage roles</Li>
               <Li>Developer Mode is enabled in Discord</Li>
               <Li>The Enshrouded Hub bot is added to your server</Li>
+              <Li>You can sign into the hub with Discord on this domain</Li>
             </ul>
           </StoneSection>
 
@@ -371,26 +382,34 @@ export default async function SetupPage(props: {
             <Note kind="warn">Do not rely on Discord Administrator permission. The hub checks a specific configured role ID.</Note>
           </StoneSection>
 
-          <StoneSection title="Step 2 Copy the Officer Role ID">
+          <StoneSection title="Step 2 Copy IDs (Officer Role + Guild)">
+            <H2>Officer role ID</H2>
             <ol style={{ margin: 0, paddingLeft: 18 }}>
               <Li>Open Discord User Settings then Advanced then enable Developer Mode</Li>
               <Li>Right click the Officer role</Li>
               <Li>Click Copy Role ID</Li>
               <Li>Save this value</Li>
             </ol>
+
+            <H2>Guild (Server) ID</H2>
+            <ol style={{ margin: 0, paddingLeft: 18 }}>
+              <Li>Right click your server icon in the left sidebar</Li>
+              <Li>Click Copy Server ID</Li>
+              <Li>Save this value</Li>
+            </ol>
           </StoneSection>
 
           <StoneSection title="Step 3 Run Initial Setup">
             <P>You must tell the hub which Discord role is the Officer role for your guild.</P>
+            <P>Set a post channel now if you want to use the RSVP command.</P>
 
             <H2>Option A Use the setup command</H2>
             <P>In Discord, run:</P>
-            <CodeBlock>{`/setup officer_role:<ROLE_ID>`}</CodeBlock>
+            <CodeBlock>{`/setup channel:#sessions officer_role:<ROLE_ID>`}</CodeBlock>
 
-            <H2>Option B Use the web setup tool</H2>
-            <P>If your site includes a setup form, enter your Guild ID and Officer Role ID and save.</P>
-
-            <Note kind="info">Once set, you only need to repeat this if you change your Officer role in Discord.</Note>
+            <Note kind="info">
+              You can re-run `/setup` at any time to update the officer role or post channel.
+            </Note>
           </StoneSection>
 
           <StoneSection title="Step 4 Verify Officer Access">
@@ -398,6 +417,7 @@ export default async function SetupPage(props: {
             <CodeBlock>{`/roles/manage-users?guildId=YOUR_GUILD_ID`}</CodeBlock>
 
             <P>If setup is correct you will see the user list and reset buttons.</P>
+            <P>If you have not synced roles yet, go to the dashboard and click Sync Roles first.</P>
 
             <H2>If you see 403 Forbidden</H2>
             <ul style={{ margin: 0, paddingLeft: 18 }}>
@@ -409,6 +429,7 @@ export default async function SetupPage(props: {
 
           <StoneSection title="Step 5 Sync Roles">
             <P>Sync pulls guild roles and member role mappings into the hub so officer checks can work.</P>
+            <P>Open /dashboard and click Sync Roles in the top right.</P>
 
             <H2>Bot permissions needed</H2>
             <ul style={{ margin: 0, paddingLeft: 18 }}>
@@ -434,6 +455,13 @@ export default async function SetupPage(props: {
           </StoneSection>
 
           <StoneSection title="Common Issues and Fixes">
+            <H2>Discord will not link</H2>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              <Li>Clear cookies/site data for this hub domain and for discord.com</Li>
+              <Li>Sign in again on the exact domain you will use long term</Li>
+              <Li>Avoid switching between localhost, preview, and production</Li>
+            </ul>
+
             <H2>403 Forbidden</H2>
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               <Li>Officer role ID not set for the guild</Li>
@@ -446,6 +474,7 @@ export default async function SetupPage(props: {
               <Li>You are not logged in</Li>
               <Li>Your session expired</Li>
               <Li>You mixed hosts like localhost and an ngrok URL</Li>
+              <Li>Clear cookies/site data if auth gets stuck</Li>
             </ul>
 
             <H2>Roles not showing</H2>
