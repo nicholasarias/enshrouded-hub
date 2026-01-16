@@ -104,6 +104,29 @@ function replyEphemeral(content: string) {
   });
 }
 
+const MAX_DURATION_MINUTES = 24 * 60;
+
+function clampDurationMinutes(total: number) {
+  if (!Number.isFinite(total)) return 0;
+  return Math.min(Math.max(Math.floor(total), 0), MAX_DURATION_MINUTES);
+}
+
+function normalizeDurationMinutes(hoursRaw: unknown, minutesRaw: unknown) {
+  const hours = Number(hoursRaw ?? 0);
+  const minutes = Number(minutesRaw ?? 0);
+
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return { ok: false as const, total: 0 };
+  }
+
+  if (hours < 0 || minutes < 0) return { ok: false as const, total: 0 };
+
+  const total = Math.floor(hours) * 60 + Math.floor(minutes);
+  if (total <= 0) return { ok: false as const, total: 0 };
+
+  return { ok: true as const, total: clampDurationMinutes(total) };
+}
+
 // =======================================================
 // Discord thumbnail helpers (static image, not user avatar)
 // =======================================================
@@ -460,7 +483,10 @@ export async function POST(req: Request) {
           const parsedWhen = await parseWhenToChicagoIso(whenInput);
           const when = parsedWhen.ok ? parsedWhen.iso : "";
 
-          const durationMinutes = Number(optionValue(body, "duration") || 0);
+          const durationHoursRaw = optionValue(body, "hours");
+          const durationMinutesRaw = optionValue(body, "minutes");
+          const durationParsed = normalizeDurationMinutes(durationHoursRaw, durationMinutesRaw);
+          const durationMinutes = durationParsed.total;
           const notesRaw = optionValue(body, "notes");
           const notes = String(notesRaw || "").trim();
 
@@ -468,8 +494,8 @@ export async function POST(req: Request) {
           if (!title) return replyEphemeral("Missing title.");
           if (!whenInput) return replyEphemeral("Missing when.");
           if (!parsedWhen.ok) return replyEphemeral(`Invalid when. ${parsedWhen.error}`);
-          if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-            return replyEphemeral("Duration must be a positive number of minutes.");
+          if (!durationParsed.ok) {
+            return replyEphemeral("Duration must be greater than 0 minutes (max 24 hours).");
           }
 
           const { data: serverRow, error: serverErr } = await supabaseAdmin

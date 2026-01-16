@@ -38,6 +38,16 @@ function toUnixSeconds(isoOrText: string) {
 
 const CHI_ZONE = "America/Chicago";
 
+function formatDurationLabel(totalMinutes: number) {
+  const total = Math.max(0, Math.floor(Number(totalMinutes) || 0));
+  if (total <= 0) return "Unknown";
+  if (total < 60) return `${total} min`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (m === 0) return `${h} hr`;
+  return `${h} hr ${m} min`;
+}
+
 function formatChicagoPretty(startLocal: string) {
   const dt = DateTime.fromISO(String(startLocal || ""), { setZone: true }).setZone(CHI_ZONE);
   if (!dt.isValid) return String(startLocal || "");
@@ -237,7 +247,7 @@ export function buildSessionEmbedPayload(params: {
 
   const headerLines: string[] = [];
   headerLines.push(`**When:** ${whenText}`);
-  headerLines.push(`**Duration:** ${Math.max(0, Number(durationMinutes))} minutes`);
+  headerLines.push(`**Duration:** ${formatDurationLabel(durationMinutes)}`);
   headerLines.push(`**Hub:** ${hubUrl}`);
   if (hasNotes) headerLines.push(`**Notes:** ${notesText}`);
 

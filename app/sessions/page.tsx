@@ -102,6 +102,16 @@ function fmtWhen(startLocal: string) {
   return new Date(ms).toLocaleString();
 }
 
+function minutesToLabel(mins: number) {
+  const m = Number(mins);
+  if (!Number.isFinite(m) || m <= 0) return "Unknown";
+  if (m < 60) return `${Math.floor(m)} min`;
+  const h = Math.floor(m / 60);
+  const r = Math.floor(m % 60);
+  if (r === 0) return `${h} hr`;
+  return `${h} hr ${r} min`;
+}
+
 function discordUrlForSession(s: SessionItem) {
   if (!s.guildId || !s.discordChannelId) return null;
   if (s.discordMessageId) {
@@ -420,7 +430,7 @@ function SessionCard(props: { s: SessionItem; guildId: string }) {
 
           <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 8 }}>
             <MiniPill>🕒 {fmtWhen(s.startLocal)}</MiniPill>
-            <MiniPill>⏱ {Number(s.durationMinutes || 0)} min</MiniPill>
+            <MiniPill>⏱ {minutesToLabel(s.durationMinutes || 0)}</MiniPill>
             {s.upcoming ? <MiniPill tone="good">🔥 Upcoming</MiniPill> : <MiniPill tone="warn">🪨 Past</MiniPill>}
           </div>
 

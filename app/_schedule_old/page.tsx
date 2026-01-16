@@ -22,9 +22,29 @@ type RsvpCounts = Record<string, { in: number; maybe: number; out: number }>;
 type FormState = {
   title: string;
   startLocal: string;
+  durationHours: number;
   durationMinutes: number;
   notes: string;
 };
+
+const MAX_DURATION_MINUTES = 24 * 60;
+
+function clampInt(v: unknown, min = 0, max = 9999) {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(Math.max(Math.floor(n), min), max);
+}
+
+function clampDurationMinutes(total: number) {
+  if (!Number.isFinite(total)) return 0;
+  return Math.min(Math.max(Math.floor(total), 0), MAX_DURATION_MINUTES);
+}
+
+function totalMinutesFromParts(hoursRaw: unknown, minutesRaw: unknown) {
+  const hours = clampInt(hoursRaw, 0, 24);
+  const minutes = clampInt(minutesRaw, 0, 59);
+  return clampDurationMinutes(hours * 60 + minutes);
+}
 
 export default function SchedulePage() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -38,7 +58,8 @@ export default function SchedulePage() {
   const [form, setForm] = useState<FormState>({
     title: "",
     startLocal: "",
-    durationMinutes: 60,
+    durationHours: 1,
+    durationMinutes: 0,
     notes: "",
   });
 
@@ -58,7 +79,7 @@ export default function SchedulePage() {
       createdAt: String((s as any).createdAt ?? (s as any).created_at ?? ""),
     };
   }
-  function formatWhen(value: string) {
+function formatWhen(value: string) {
   const ms = Date.parse(value);
   if (!Number.isFinite(ms)) return value;
 
@@ -70,6 +91,16 @@ export default function SchedulePage() {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(ms));
+}
+
+function minutesToLabel(mins: number) {
+  const m = Number(mins);
+  if (!Number.isFinite(m) || m <= 0) return "Unknown";
+  if (m < 60) return `${Math.floor(m)} min`;
+  const h = Math.floor(m / 60);
+  const r = Math.floor(m % 60);
+  if (r === 0) return `${h} hr`;
+  return `${h} hr ${r} min`;
 }
 
 
@@ -127,8 +158,10 @@ export default function SchedulePage() {
 },
 
       body: JSON.stringify({
-  ...(form as any),
+  title: form.title,
   startLocal: new Date(form.startLocal).toISOString(),
+  durationMinutes: totalMinutesFromParts(form.durationHours, form.durationMinutes),
+  notes: form.notes,
   guildId,
 }),
 
@@ -142,7 +175,7 @@ export default function SchedulePage() {
     }
 
     setMessage("Created");
-    setForm({ title: "", startLocal: "", durationMinutes: 60, notes: "" });
+    setForm({ title: "", startLocal: "", durationHours: 1, durationMinutes: 0, notes: "" });
 
     await loadSessions();
     await loadRsvps();
@@ -199,18 +232,37 @@ export default function SchedulePage() {
           </label>
 
           <label>
-            Duration (minutes)
-            <input
-              type="number"
-              style={{ display: "block", width: "100%", padding: 8 }}
-              value={form.durationMinutes}
-              onChange={(e) =>
-                setForm((p) => ({
-                  ...p,
-                  durationMinutes: Number(e.target.value || 0),
-                }))
-              }
-            />
+            Duration
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <input
+                type="number"
+                style={{ display: "block", width: "100%", padding: 8 }}
+                value={form.durationHours}
+                onChange={(e) =>
+                  setForm((p) => ({
+                    ...p,
+                    durationHours: clampInt(e.target.value, 0, 24),
+                  }))
+                }
+                min={0}
+                max={24}
+                placeholder="Hours"
+              />
+              <input
+                type="number"
+                style={{ display: "block", width: "100%", padding: 8 }}
+                value={form.durationMinutes}
+                onChange={(e) =>
+                  setForm((p) => ({
+                    ...p,
+                    durationMinutes: clampInt(e.target.value, 0, 59),
+                  }))
+                }
+                min={0}
+                max={59}
+                placeholder="Minutes"
+              />
+            </div>
           </label>
 
           <label>
@@ -259,7 +311,7 @@ export default function SchedulePage() {
         <div style={{ fontWeight: 700, fontSize: 16 }}>{s.title}</div>
 
         <div style={{ marginTop: 6, opacity: 0.8 }}>
-          {formatWhen(String(s.startLocal || ""))} • {s.durationMinutes} min
+          {formatWhen(String(s.startLocal || ""))} • {minutesToLabel(s.durationMinutes)}
         </div>
 
         {s.notes ? (

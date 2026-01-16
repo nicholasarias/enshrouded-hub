@@ -41,6 +41,26 @@ const THEME = {
   dangerText: "#fca5a5",
 };
 
+const MAX_DURATION_MINUTES = 24 * 60;
+
+function clampDurationMinutes(total: number) {
+  if (!Number.isFinite(total)) return 0;
+  return Math.min(Math.max(Math.floor(total), 0), MAX_DURATION_MINUTES);
+}
+
+function splitDurationMinutes(total: number) {
+  const safe = clampDurationMinutes(total);
+  return { hours: Math.floor(safe / 60), minutes: safe % 60 };
+}
+
+function formatDurationLabel(total: number) {
+  const parts = splitDurationMinutes(total);
+  if (!parts.hours && !parts.minutes) return "Unknown";
+  if (!parts.hours) return `${parts.minutes} min`;
+  if (!parts.minutes) return `${parts.hours} hr`;
+  return `${parts.hours} hr ${parts.minutes} min`;
+}
+
 function fmtWhen(startLocal: string) {
   const ms = Date.parse(startLocal);
   if (!Number.isFinite(ms)) return startLocal || "Unknown time";
@@ -595,13 +615,28 @@ export default function SessionDetailClient(props: { data: DetailResponse }) {
     const when = window.prompt("New startLocal (ISO or yyyy-mm-ddThh:mm)", s.startLocal || "");
     if (when === null) return;
 
-    const durStr = window.prompt("New durationMinutes", String(s.durationMinutes || 90));
-    if (durStr === null) return;
+    const current = splitDurationMinutes(Number(s.durationMinutes || 0));
+    const hoursStr = window.prompt("New duration hours", String(current.hours));
+    if (hoursStr === null) return;
+
+    const minutesStr = window.prompt("New duration minutes", String(current.minutes));
+    if (minutesStr === null) return;
 
     const n = window.prompt("New notes", s.notes || "");
     if (n === null) return;
 
-    const dur = Number(durStr) || 0;
+    const hours = Number(hoursStr);
+    const minutes = Number(minutesStr);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours < 0 || minutes < 0) {
+      window.alert("Duration hours and minutes must be non-negative numbers.");
+      return;
+    }
+
+    const dur = clampDurationMinutes(Math.floor(hours) * 60 + Math.floor(minutes));
+    if (dur <= 0) {
+      window.alert("Duration must be greater than 0 minutes.");
+      return;
+    }
 
     try {
       const res = await fetch("/api/sessions/update", {
@@ -709,7 +744,7 @@ export default function SessionDetailClient(props: { data: DetailResponse }) {
 
         <StoneSection
           title="Session Details"
-          subtitle={`${fmtWhen(s.startLocal)} • ${s.durationMinutes} minutes`}
+          subtitle={`${fmtWhen(s.startLocal)} • ${formatDurationLabel(s.durationMinutes)}`}
           right={
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "end" }}>
               <MiniPill tone="good">✅ In: {data.counts.in}</MiniPill>

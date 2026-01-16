@@ -55,10 +55,16 @@ const body = [
         required: true,
       },
       {
-        name: "duration",
-        description: "Duration minutes (example 90)",
+        name: "hours",
+        description: "Duration hours (0-24)",
         type: 4,
-        required: true,
+        required: false,
+      },
+      {
+        name: "minutes",
+        description: "Duration minutes (0-59)",
+        type: 4,
+        required: false,
       },
       {
         name: "notes",

@@ -19,6 +19,25 @@ function safeNumber(v: unknown, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+const MAX_DURATION_MINUTES = 24 * 60;
+
+function clampInt(v: unknown, min = 0, max = 9999) {
+  const n = Math.floor(safeNumber(v, min));
+  if (!Number.isFinite(n)) return min;
+  return Math.min(Math.max(n, min), max);
+}
+
+function clampDurationMinutes(total: number) {
+  if (!Number.isFinite(total)) return 0;
+  return Math.min(Math.max(Math.floor(total), 0), MAX_DURATION_MINUTES);
+}
+
+function totalMinutesFromParts(hoursRaw: unknown, minutesRaw: unknown) {
+  const hours = clampInt(hoursRaw, 0, 24);
+  const minutes = clampInt(minutesRaw, 0, 59);
+  return clampDurationMinutes(hours * 60 + minutes);
+}
+
 function formatWhen(isoLike: string) {
   if (!isoLike) return "Unknown";
   const d = new Date(isoLike);
@@ -71,18 +90,20 @@ export default function SchedulePage() {
   const [form, setForm] = useState({
     title: "",
     startLocal: "",
-    durationMinutes: 90,
+    durationHours: 1,
+    durationMinutes: 30,
     notes: "",
   });
 
   const canPost = useMemo(() => {
+    const totalMinutes = totalMinutesFromParts(form.durationHours, form.durationMinutes);
     return (
       !!guildId &&
       form.title.trim().length > 0 &&
       form.startLocal.trim().length > 0 &&
-      safeNumber(form.durationMinutes, 0) > 0
+      totalMinutes > 0
     );
-  }, [guildId, form]);
+  }, [guildId, form.durationHours, form.durationMinutes, form.startLocal, form.title]);
 
   async function loadAll() {
     try {
@@ -160,11 +181,12 @@ export default function SchedulePage() {
     setError(null);
 
     try {
+      const durationMinutes = totalMinutesFromParts(form.durationHours, form.durationMinutes);
       const payload = {
         guildId,
         title: form.title.trim(),
         startLocal: new Date(form.startLocal).toISOString(),
-        durationMinutes: safeNumber(form.durationMinutes, 90),
+        durationMinutes,
         notes: form.notes.trim() || null,
       };
 
@@ -181,7 +203,7 @@ export default function SchedulePage() {
         throw new Error(`Create failed: ${res.status} ${t}`);
       }
 
-      setForm({ title: "", startLocal: "", durationMinutes: 90, notes: "" });
+      setForm({ title: "", startLocal: "", durationHours: 1, durationMinutes: 30, notes: "" });
       await loadAll();
     } catch (e: any) {
       setError(e?.message || "Create failed");
@@ -255,14 +277,31 @@ export default function SchedulePage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-semibold text-zinc-300">Duration</label>
-                  <input
-                    type="number"
-                    value={form.durationMinutes}
-                    onChange={(e) => setForm((p) => ({ ...p, durationMinutes: safeNumber(e.target.value, 90) }))}
-                    min={15}
-                    max={360}
-                    className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
-                  />
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    <input
+                      type="number"
+                      value={form.durationHours}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, durationHours: clampInt(e.target.value, 0, 24) }))
+                      }
+                      min={0}
+                      max={24}
+                      placeholder="Hours"
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
+                    />
+                    <input
+                      type="number"
+                      value={form.durationMinutes}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, durationMinutes: clampInt(e.target.value, 0, 59) }))
+                      }
+                      min={0}
+                      max={59}
+                      placeholder="Minutes"
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-emerald-400/30"
+                    />
+                  </div>
+                  <div className="mt-1 text-[11px] text-zinc-500">Max 24 hours total.</div>
                 </div>
 
                 <div className="rounded-xl border border-white/10 bg-black/25 p-3">
@@ -270,7 +309,9 @@ export default function SchedulePage() {
                   <div className="mt-1 text-sm font-semibold text-zinc-100">
                     {form.startLocal ? formatWhen(new Date(form.startLocal).toISOString()) : "Pick a time"}
                   </div>
-                  <div className="mt-1 text-xs text-zinc-400">{minutesToLabel(form.durationMinutes)}</div>
+                  <div className="mt-1 text-xs text-zinc-400">
+                    {minutesToLabel(totalMinutesFromParts(form.durationHours, form.durationMinutes))}
+                  </div>
                 </div>
               </div>
 

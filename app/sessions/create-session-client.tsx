@@ -22,6 +22,25 @@ const THEME = {
   dangerText: "#fca5a5",
 };
 
+const MAX_DURATION_MINUTES = 24 * 60;
+
+function clampInt(v: unknown, min = 0, max = 9999) {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(Math.max(Math.floor(n), min), max);
+}
+
+function clampDurationMinutes(total: number) {
+  if (!Number.isFinite(total)) return 0;
+  return Math.min(Math.max(Math.floor(total), 0), MAX_DURATION_MINUTES);
+}
+
+function totalMinutesFromParts(hoursRaw: unknown, minutesRaw: unknown) {
+  const hours = clampInt(hoursRaw, 0, 24);
+  const minutes = clampInt(minutesRaw, 0, 59);
+  return clampDurationMinutes(hours * 60 + minutes);
+}
+
 function formatStartLocal(d: Date) {
   return d.toISOString();
 }
@@ -54,18 +73,21 @@ const DateInput = React.forwardRef<HTMLInputElement, any>(function DateInput(pro
 export default function CreateSessionClient() {
   const [title, setTitle] = useState("");
   const [startAt, setStartAt] = useState<Date | null>(null);
-  const [durationMinutes, setDurationMinutes] = useState(90);
+  const [durationHours, setDurationHours] = useState(1);
+  const [durationMinutes, setDurationMinutes] = useState(30);
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [okFlash, setOkFlash] = useState(false);
 
+  const totalMinutes = totalMinutesFromParts(durationHours, durationMinutes);
+
   const canSubmit = useMemo(() => {
     if (!title.trim()) return false;
     if (!startAt) return false;
-    if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) return false;
+    if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return false;
     return true;
-  }, [title, startAt, durationMinutes]);
+  }, [title, startAt, totalMinutes]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -83,7 +105,7 @@ export default function CreateSessionClient() {
           guildId: GUILD_ID,
           title,
           startLocal: formatStartLocal(startAt),
-          durationMinutes,
+          durationMinutes: totalMinutes,
           notes,
         }),
       });
@@ -225,23 +247,45 @@ export default function CreateSessionClient() {
               <span style={{ color: THEME.textAsh, fontSize: 12, fontWeight: 950, letterSpacing: 1, textTransform: "uppercase" }}>
                 Duration
               </span>
-              <input
-                type="number"
-                min={15}
-                step={15}
-                value={durationMinutes}
-                onChange={(e) => setDurationMinutes(Number(e.target.value))}
-                style={{
-                  padding: "12px 12px",
-                  borderRadius: 6,
-                  border: `1px solid ${THEME.stoneBorder}`,
-                  background: "#0c0e12",
-                  color: THEME.textSilver,
-                  outline: "none",
-                  fontWeight: 900,
-                  boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.6)",
-                }}
-              />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <input
+                  type="number"
+                  min={0}
+                  max={24}
+                  value={durationHours}
+                  onChange={(e) => setDurationHours(clampInt(e.target.value, 0, 24))}
+                  placeholder="Hours"
+                  style={{
+                    padding: "12px 12px",
+                    borderRadius: 6,
+                    border: `1px solid ${THEME.stoneBorder}`,
+                    background: "#0c0e12",
+                    color: THEME.textSilver,
+                    outline: "none",
+                    fontWeight: 900,
+                    boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.6)",
+                  }}
+                />
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={durationMinutes}
+                  onChange={(e) => setDurationMinutes(clampInt(e.target.value, 0, 59))}
+                  placeholder="Minutes"
+                  style={{
+                    padding: "12px 12px",
+                    borderRadius: 6,
+                    border: `1px solid ${THEME.stoneBorder}`,
+                    background: "#0c0e12",
+                    color: THEME.textSilver,
+                    outline: "none",
+                    fontWeight: 900,
+                    boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.6)",
+                  }}
+                />
+              </div>
+              <span style={{ color: THEME.textAsh, fontSize: 11, fontWeight: 800 }}>Max 24 hours total.</span>
             </label>
 
             <label style={{ display: "grid", gap: 8 }}>

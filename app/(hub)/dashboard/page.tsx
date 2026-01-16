@@ -43,6 +43,16 @@ function fmtWhen(startLocal: string) {
   return new Date(ms).toLocaleString();
 }
 
+function minutesToLabel(mins: number) {
+  const m = Number(mins);
+  if (!Number.isFinite(m) || m <= 0) return "Unknown";
+  if (m < 60) return `${Math.floor(m)} min`;
+  const h = Math.floor(m / 60);
+  const r = Math.floor(m % 60);
+  if (r === 0) return `${h} hr`;
+  return `${h} hr ${r} min`;
+}
+
 type SessionItem = {
   id: string;
   title: string;
@@ -412,7 +422,7 @@ export default async function DashboardPage(props: {
                     <div style={{ fontSize: 16, fontWeight: 950, color: THEME.textSilver }}>{nextSession.title || "Untitled"}</div>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <Pill active>🕒 {fmtWhen(nextSession.startLocal)}</Pill>
-                      <Pill active>⏱ {Number(nextSession.durationMinutes || 0)} min</Pill>
+                      <Pill active>⏱ {minutesToLabel(nextSession.durationMinutes || 0)}</Pill>
                       <Pill active>🔥 Scheduled</Pill>
                     </div>
                   </div>
