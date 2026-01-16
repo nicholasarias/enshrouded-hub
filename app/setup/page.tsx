@@ -459,7 +459,6 @@ export default async function SetupPage(props: {
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               <Li>Clear cookies/site data for this hub domain and for discord.com</Li>
               <Li>Sign in again on the exact domain you will use long term</Li>
-              <Li>Avoid switching between localhost, preview, and production</Li>
             </ul>
 
             <H2>403 Forbidden</H2>
