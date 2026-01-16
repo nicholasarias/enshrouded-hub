@@ -472,7 +472,6 @@ export default async function SetupPage(props: {
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               <Li>You are not logged in</Li>
               <Li>Your session expired</Li>
-              <Li>You mixed hosts like localhost and an ngrok URL</Li>
               <Li>Clear cookies/site data if auth gets stuck</Li>
             </ul>
 
