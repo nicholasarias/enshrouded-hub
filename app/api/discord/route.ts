@@ -97,6 +97,13 @@ function optionValue(body: any, name: string) {
   return opt?.value;
 }
 
+function replyEphemeral(content: string) {
+  return NextResponse.json({
+    type: 4,
+    data: { content, flags: 64, allowed_mentions: { parse: [] } },
+  });
+}
+
 // =======================================================
 // Discord thumbnail helpers (static image, not user avatar)
 // =======================================================
@@ -304,179 +311,8 @@ async function parseWhenToChicagoIso(inputRaw: string) {
 }
 
 // =======================================================
-// Badge loading (Discord user id -> hub role icons)
+// Discord HTTP helpers (bot)
 // =======================================================
-async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discordIds: string[] }) {
-  const supabaseAdmin = await getSupabaseAdmin();
-
-  const { guildId, discordIds } = params;
-  const result = new Map<string, BadgeParts>();
-
-  for (const id of discordIds) result.set(id, { combat: "❔", logistics: "❔" });
-  if (!discordIds.length) return result;
-
-  const { data: profs, error: profErr } = await supabaseAdmin
-    .from("profiles")
-    .select("id, discord_user_id")
-    .in("discord_user_id", discordIds);
-
-  if (profErr) {
-    console.error("profiles lookup failed:", profErr);
-    return result;
-  }
-
-  const discordToProfile = new Map<string, string>();
-  const profileIds: string[] = [];
-
-  for (const p of profs ?? []) {
-    const did = String((p as any).discord_user_id || "");
-    const pid = String((p as any).id || "");
-    if (!did || !pid) continue;
-    discordToProfile.set(did, pid);
-    profileIds.push(pid);
-  }
-
-  if (!profileIds.length) return result;
-
-  const { data: selections, error: selErr } = await supabaseAdmin
-    .from("user_hub_roles")
-    .select("user_id, role_kind, role_id")
-    .eq("guild_id", guildId)
-    .in("user_id", profileIds);
-
-  if (selErr) {
-    console.error("user_hub_roles lookup failed:", selErr);
-    return result;
-  }
-
-  const perProfile = new Map<string, { combatRoleId: string | null; logisticsRoleId: string | null }>();
-
-  for (const row of selections ?? []) {
-    const pid = String((row as any).user_id || "");
-    const kind = String((row as any).role_kind || "");
-    const rid = String((row as any).role_id || "");
-    if (!pid || !rid) continue;
-
-    const cur = perProfile.get(pid) || { combatRoleId: null, logisticsRoleId: null };
-    if (kind === "combat") cur.combatRoleId = rid;
-    if (kind === "logistics") cur.logisticsRoleId = rid;
-    perProfile.set(pid, cur);
-  }
-
-  const roleIds = Array.from(
-    new Set(
-      Array.from(perProfile.values())
-        .flatMap((x) => [x.combatRoleId, x.logisticsRoleId])
-        .filter(Boolean) as string[]
-    )
-  );
-
-  const roleIdToGroup = new Map<string, string>();
-
-  if (roleIds.length) {
-    const { data: meta, error: metaErr } = await supabaseAdmin
-      .from("guild_role_meta")
-      .select("role_id, group_key")
-      .eq("guild_id", guildId)
-      .in("role_id", roleIds);
-
-    if (metaErr) {
-      console.error("guild_role_meta lookup failed:", metaErr);
-    } else {
-      for (const m of meta ?? []) {
-        const rid = String((m as any).role_id || "");
-        const gk = String((m as any).group_key || "");
-        if (rid) roleIdToGroup.set(rid, gk);
-      }
-    }
-  }
-
-  for (const [discordId, profileId] of discordToProfile.entries()) {
-    const sel = perProfile.get(profileId) || { combatRoleId: null, logisticsRoleId: null };
-
-    const combatGroup = sel.combatRoleId ? roleIdToGroup.get(sel.combatRoleId) : null;
-    const logiGroup = sel.logisticsRoleId ? roleIdToGroup.get(sel.logisticsRoleId) : null;
-
-    const combatIcon = combatGroup ? groupIcon(combatGroup) : "❔";
-    const logiIcon = logiGroup ? groupIcon(logiGroup) : "❔";
-
-    const safeCombat = combatIcon === "🛡" || combatIcon === "🧙" || combatIcon === "🏹" ? combatIcon : "❔";
-    const safeLogi = logiIcon || "❔";
-
-    result.set(discordId, { combat: safeCombat, logistics: safeLogi });
-  }
-
-  return result;
-}
-
-// =======================================================
-// Discord HTTP helpers
-// =======================================================
-
-// Capture the correct application id for the current interaction.
-// This avoids 404 Unknown Webhook when env vars point at the wrong app.
-let _lastInteractionAppId = "";
-
-// IMPORTANT FIX:
-// When you ACK a slash command with type: 5 (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE),
-// you must complete it by editing the ORIGINAL interaction response.
-// That is done via PATCH .../messages/@original.
-// Some deployments end up with a mismatched DISCORD_APPLICATION_ID.
-// We use body.application_id when available and fall back to env.
-// If editing fails, we fall back to a followup POST so users still get a response.
-async function postToInteractionWebhook(params: { token: string; content: string; flags?: number }) {
-  const appId =
-    String(_lastInteractionAppId || "").trim() || String(process.env.DISCORD_APPLICATION_ID || "").trim();
-
-  if (!appId) throw new Error("DISCORD_APPLICATION_ID missing");
-
-  const token = String(params.token || "").trim();
-  if (!token) throw new Error("Interaction token missing");
-
-  // 1) Try editing the deferred original response
-  {
-    const url = `https://discord.com/api/v10/webhooks/${appId}/${token}/messages/@original`;
-
-    const res = await fetch(url, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: params.content,
-        allowed_mentions: { parse: [] },
-      }),
-    });
-
-    const text = await res.text().catch(() => "");
-
-    if (res.ok) return text;
-
-    console.error("Edit original interaction response failed", res.status, text);
-  }
-
-  // 2) Fallback: create a followup message (ephemeral via flags)
-  {
-    const url = `https://discord.com/api/v10/webhooks/${appId}/${token}?wait=true`;
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: params.content,
-        flags: params.flags ?? 64,
-        allowed_mentions: { parse: [] },
-      }),
-    });
-
-    const text = await res.text().catch(() => "");
-    if (!res.ok) {
-      console.error("Followup interaction message failed", res.status, text);
-      throw new Error(`Followup interaction message failed: HTTP ${res.status} ${text}`);
-    }
-
-    return text;
-  }
-}
-
 async function postChannelMessageAsBot(params: { channelId: string; payload: any }) {
   const botToken = process.env.DISCORD_BOT_TOKEN;
   if (!botToken) throw new Error("DISCORD_BOT_TOKEN missing on server.");
@@ -502,104 +338,6 @@ async function postChannelMessageAsBot(params: { channelId: string; payload: any
 
   if (!res.ok) throw new Error(`Discord post message failed: HTTP ${res.status} ${text}`);
   return json;
-}
-
-async function patchChannelMessageAsBot(params: { channelId: string; messageId: string; payload: any }) {
-  const botToken = process.env.DISCORD_BOT_TOKEN;
-  if (!botToken) throw new Error("DISCORD_BOT_TOKEN missing on server.");
-
-  const url = `https://discord.com/api/v10/channels/${params.channelId}/messages/${params.messageId}`;
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bot ${botToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(params.payload),
-  });
-
-  const text = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(`Discord PATCH message failed: HTTP ${res.status} ${text}`);
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-// =======================================================
-// RSVP message refresh (used for button clicks)
-// =======================================================
-async function updatePostedSessionMessage(params: { sessionId: string }) {
-  const supabaseAdmin = await getSupabaseAdmin();
-  const { buildSessionEmbedPayload } = await getEmbedBuilder();
-
-  const { sessionId } = params;
-
-  const { data: session, error: sessionErr } = await supabaseAdmin
-    .from("sessions")
-    .select("title,start_local,duration_minutes,notes,guild_id,discord_channel_id,discord_message_id")
-    .eq("id", sessionId)
-    .single();
-
-  if (sessionErr || !session) {
-    console.error("Session lookup failed:", sessionErr);
-    return;
-  }
-
-  const guildId = String((session as any).guild_id || "");
-  const channelId = String((session as any).discord_channel_id || "");
-  const messageId = String((session as any).discord_message_id || "");
-
-  if (!channelId || !messageId) {
-    console.error("Missing discord_channel_id or discord_message_id for session:", sessionId);
-    return;
-  }
-
-  const { data: rsvps, error: rsvpsErr } = await supabaseAdmin
-    .from("session_rsvps")
-    .select("status,user_id")
-    .eq("session_id", sessionId);
-
-  if (rsvpsErr) {
-    console.error("RSVP load failed:", rsvpsErr);
-    return;
-  }
-
-  const inUsers: string[] = [];
-  const maybeUsers: string[] = [];
-  const outUsers: string[] = [];
-
-  for (const r of rsvps ?? []) {
-    const s = String((r as any).status || "");
-    const did = String((r as any).user_id || "");
-    if (!did) continue;
-
-    if (s === "in") inUsers.push(did);
-    if (s === "maybe") maybeUsers.push(did);
-    if (s === "out") outUsers.push(did);
-  }
-
-  const allIds = Array.from(new Set([...inUsers, ...maybeUsers, ...outUsers]));
-  const badgeParts = guildId
-    ? await loadUserBadgePartsForDiscordIds({ guildId, discordIds: allIds })
-    : new Map<string, BadgeParts>();
-
-  const payload = buildSessionEmbedPayload({
-    sessionId,
-    title: String((session as any).title),
-    startLocal: String((session as any).start_local),
-    durationMinutes: Number((session as any).duration_minutes),
-    notes: String((session as any).notes || ""),
-    guildId,
-    inUsers,
-    maybeUsers,
-    outUsers,
-    badgeParts,
-  });
-
-  await patchChannelMessageAsBot({ channelId, messageId, payload });
 }
 
 // =======================================================
@@ -634,140 +372,82 @@ export async function POST(req: Request) {
       return NextResponse.json({ type: 1 });
     }
 
-    // 2) SLASH COMMANDS
+    // 2) SLASH COMMANDS (respond immediately, no deferred webhooks)
     if (body.type === 2) {
-      // Capture application id from the interaction (prevents Unknown Webhook)
-      _lastInteractionAppId = String((body as any)?.application_id || "").trim();
-
-      // ACK immediately (Discord times out fast)
-      const ack = NextResponse.json({ type: 5, data: { flags: 64 } });
-
       const commandName = body.data?.name;
       console.log("DISCORD COMMAND NAME:", commandName, "RAW DATA:", body.data);
-      const token = String(body.token || "").trim();
 
-      // Permission: always ACK, send message via webhook
+      // Permission check
       if ((commandName === "setup" || commandName === "rsvp") && !hasManagePerms(body)) {
-        await postToInteractionWebhook({
-          token,
-          content: "You need Manage Server (or Admin) to use this command.",
-          flags: 64,
-        });
-        return ack;
+        return replyEphemeral("You need Manage Server (or Admin) to use this command.");
       }
 
-      // Run the heavy work AFTER ACK so Discord never times out
+      // /setup: save channel and or officer role
       if (commandName === "setup") {
-        await (async () => {
-          try {
-            const supabaseAdmin = await getSupabaseAdmin();
+        try {
+          const supabaseAdmin = await getSupabaseAdmin();
+          const guildId = String(body.guild_id || "").trim();
 
-            const guildId = String(body.guild_id || "").trim();
+          const channelIdRaw = optionValue(body, "channel");
+          const officerRoleIdRaw = optionValue(body, "officer_role");
 
-            const channelIdRaw = optionValue(body, "channel");
-            const officerRoleIdRaw = optionValue(body, "officer_role");
+          const channelId = channelIdRaw ? String(channelIdRaw).trim() : "";
+          const officerRoleId = officerRoleIdRaw ? String(officerRoleIdRaw).trim() : "";
 
-            const channelId = channelIdRaw ? String(channelIdRaw).trim() : "";
-            const officerRoleId = officerRoleIdRaw ? String(officerRoleIdRaw).trim() : "";
-
-            if (!guildId || !isSnowflake(guildId)) {
-              await postToInteractionWebhook({
-                token,
-                content: "This command must be used inside a Discord server (guild).",
-                flags: 64,
-              });
-              return;
-            }
-
-            if (!channelId && !officerRoleId) {
-              await postToInteractionWebhook({
-                token,
-                content: "Missing options. Provide at least one: channel or officer_role.",
-                flags: 64,
-              });
-              return;
-            }
-
-            if (channelId && !isSnowflake(channelId)) {
-              await postToInteractionWebhook({
-                token,
-                content: "Invalid channel id provided.",
-                flags: 64,
-              });
-              return;
-            }
-
-            if (officerRoleId && !isSnowflake(officerRoleId)) {
-              await postToInteractionWebhook({
-                token,
-                content: "Invalid officer role id provided.",
-                flags: 64,
-              });
-              return;
-            }
-
-            if (channelId) {
-              const { error } = await supabaseAdmin.from("discord_servers").upsert({
-                guild_id: guildId,
-                channel_id: channelId,
-                updated_at: new Date().toISOString(),
-              });
-
-              if (error) {
-                await postToInteractionWebhook({
-                  token,
-                  content: `❌ Failed to save channel.\n${error.message}`,
-                  flags: 64,
-                });
-                return;
-              }
-            }
-
-            if (officerRoleId) {
-              const { error } = await supabaseAdmin.from("guild_settings").upsert({
-                guild_id: guildId,
-                officer_role_id: officerRoleId,
-                updated_at: new Date().toISOString(),
-              });
-
-              if (error) {
-                await postToInteractionWebhook({
-                  token,
-                  content: `❌ Failed to save officer role.\n${error.message}`,
-                  flags: 64,
-                });
-                return;
-              }
-            }
-
-            const lines: string[] = [];
-            lines.push("✅ Setup saved.");
-            if (channelId) lines.push(`• Post channel: <#${channelId}>`);
-            if (officerRoleId) lines.push(`• Officer role: <@&${officerRoleId}>`);
-            lines.push("");
-            lines.push("Hub links:");
-            lines.push(`• Roles: ${hubLink("/roles", guildId)}`);
-            lines.push(`• Setup guide: ${hubLink("/setup", guildId)}`);
-            lines.push(`• Manage users: ${hubLink("/roles/manage-users", guildId)}`);
-
-            await postToInteractionWebhook({
-              token,
-              content: lines.join("\n"),
-              flags: 64,
-            });
-          } catch (e: any) {
-            console.error("/setup crashed:", e);
-            await postToInteractionWebhook({
-              token,
-              content: "❌ Internal error running /setup. Check server logs.",
-              flags: 64,
-            });
+          if (!guildId || !isSnowflake(guildId)) {
+            return replyEphemeral("This command must be used inside a Discord server (guild).");
           }
-        })();
 
-        return ack;
+          if (!channelId && !officerRoleId) {
+            return replyEphemeral("Missing options. Provide at least one: channel or officer_role.");
+          }
+
+          if (channelId && !isSnowflake(channelId)) {
+            return replyEphemeral("Invalid channel id provided.");
+          }
+
+          if (officerRoleId && !isSnowflake(officerRoleId)) {
+            return replyEphemeral("Invalid officer role id provided.");
+          }
+
+          if (channelId) {
+            const { error } = await supabaseAdmin.from("discord_servers").upsert({
+              guild_id: guildId,
+              channel_id: channelId,
+              updated_at: new Date().toISOString(),
+            });
+
+            if (error) return replyEphemeral(`❌ Failed to save channel.\n${error.message}`);
+          }
+
+          if (officerRoleId) {
+            const { error } = await supabaseAdmin.from("guild_settings").upsert({
+              guild_id: guildId,
+              officer_role_id: officerRoleId,
+              updated_at: new Date().toISOString(),
+            });
+
+            if (error) return replyEphemeral(`❌ Failed to save officer role.\n${error.message}`);
+          }
+
+          const lines: string[] = [];
+          lines.push("✅ Setup saved.");
+          if (channelId) lines.push(`• Post channel: <#${channelId}>`);
+          if (officerRoleId) lines.push(`• Officer role: <@&${officerRoleId}>`);
+          lines.push("");
+          lines.push("Hub links:");
+          lines.push(`• Roles: ${hubLink("/roles", guildId)}`);
+          lines.push(`• Setup guide: ${hubLink("/setup", guildId)}`);
+          lines.push(`• Manage users: ${hubLink("/roles/manage-users", guildId)}`);
+
+          return replyEphemeral(lines.join("\n"));
+        } catch (e: any) {
+          console.error("/setup crashed:", e);
+          return replyEphemeral("❌ Internal error running /setup. Check server logs.");
+        }
       }
 
+      // /rsvp: keep it simple and immediate too (no deferred)
       if (commandName === "rsvp") {
         try {
           const supabaseAdmin = await getSupabaseAdmin();
@@ -784,61 +464,25 @@ export async function POST(req: Request) {
           const notesRaw = optionValue(body, "notes");
           const notes = String(notesRaw || "").trim();
 
-          if (!guildId) {
-            return NextResponse.json({
-              type: 4,
-              data: { content: "This command must be used in a server (guild).", flags: 64 },
-            });
-          }
-
-          if (!title) {
-            return NextResponse.json({ type: 4, data: { content: "Missing title.", flags: 64 } });
-          }
-
-          if (!whenInput) {
-            return NextResponse.json({ type: 4, data: { content: "Missing when.", flags: 64 } });
-          }
-
-          if (!parsedWhen.ok) {
-            return NextResponse.json({
-              type: 4,
-              data: { content: `Invalid when. ${parsedWhen.error}`, flags: 64 },
-            });
-          }
-
+          if (!guildId) return replyEphemeral("This command must be used in a server (guild).");
+          if (!title) return replyEphemeral("Missing title.");
+          if (!whenInput) return replyEphemeral("Missing when.");
+          if (!parsedWhen.ok) return replyEphemeral(`Invalid when. ${parsedWhen.error}`);
           if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
-            return NextResponse.json({
-              type: 4,
-              data: { content: "Duration must be a positive number of minutes.", flags: 64 },
-            });
+            return replyEphemeral("Duration must be a positive number of minutes.");
           }
 
-          // 1) Find configured channel
           const { data: serverRow, error: serverErr } = await supabaseAdmin
             .from("discord_servers")
             .select("channel_id")
             .eq("guild_id", guildId)
             .maybeSingle();
 
-          if (serverErr) {
-            return NextResponse.json({
-              type: 4,
-              data: { content: `❌ DB error loading setup.\n${serverErr.message}`, flags: 64 },
-            });
-          }
+          if (serverErr) return replyEphemeral(`❌ DB error loading setup.\n${serverErr.message}`);
 
           const channelId = String((serverRow as any)?.channel_id || "").trim();
-          if (!channelId) {
-            return NextResponse.json({
-              type: 4,
-              data: {
-                content: "❌ No channel configured. Run `/setup` first and choose the posting channel.",
-                flags: 64,
-              },
-            });
-          }
+          if (!channelId) return replyEphemeral("❌ No channel configured. Run `/setup` first.");
 
-          // 2) Create session in Supabase
           const { data: inserted, error: insErr } = await supabaseAdmin
             .from("sessions")
             .insert({
@@ -852,16 +496,10 @@ export async function POST(req: Request) {
             .select("id,title,start_local,duration_minutes,notes,guild_id")
             .single();
 
-          if (insErr || !inserted) {
-            return NextResponse.json({
-              type: 4,
-              data: { content: `❌ Failed to create session.\n${insErr?.message || ""}`, flags: 64 },
-            });
-          }
+          if (insErr || !inserted) return replyEphemeral(`❌ Failed to create session.\n${insErr?.message || ""}`);
 
           const sessionId = String((inserted as any).id);
 
-          // 3) Build initial payload (no RSVPs yet)
           const badgeParts = new Map<string, BadgeParts>();
           const payload = buildSessionEmbedPayload({
             sessionId,
@@ -876,68 +514,41 @@ export async function POST(req: Request) {
             badgeParts,
           });
 
-          // Static thumbnail (your custom image)
           attachThumbnailToFirstEmbed(payload);
 
-          // 4) Post to channel as bot
           let postedMessageId = "";
           try {
             const posted = await postChannelMessageAsBot({ channelId, payload });
             postedMessageId = String((posted as any)?.id || "").trim();
           } catch (e: any) {
-            // rollback session row so you don't get orphan rows
             await supabaseAdmin.from("sessions").delete().eq("id", sessionId);
-
-            return NextResponse.json({
-              type: 4,
-              data: { content: `❌ Discord post failed.\n${e?.message || ""}`, flags: 64 },
-            });
+            return replyEphemeral(`❌ Discord post failed.\n${e?.message || ""}`);
           }
 
           if (!postedMessageId) {
             await supabaseAdmin.from("sessions").delete().eq("id", sessionId);
-
-            return NextResponse.json({
-              type: 4,
-              data: { content: "❌ Discord did not return a message id.", flags: 64 },
-            });
+            return replyEphemeral("❌ Discord did not return a message id.");
           }
 
-          // 5) Save message ids back to session
           const { error: updErr } = await supabaseAdmin
             .from("sessions")
             .update({ discord_channel_id: channelId, discord_message_id: postedMessageId } as any)
             .eq("id", sessionId);
 
           if (updErr) {
-            return NextResponse.json({
-              type: 4,
-              data: {
-                content: `⚠️ Session posted, but failed to save Discord ids.\nSession: \`${sessionId}\`\n${updErr.message}`,
-                flags: 64,
-              },
-            });
+            return replyEphemeral(
+              `⚠️ Session posted, but failed to save Discord ids.\nSession: \`${sessionId}\`\n${updErr.message}`
+            );
           }
 
-          return NextResponse.json({
-            type: 4,
-            data: {
-              content: `✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``,
-              flags: 64,
-            },
-          });
+          return replyEphemeral(`✅ Session posted in <#${channelId}>.\nSession id: \`${sessionId}\``);
         } catch (e: any) {
           console.error("/rsvp crashed:", e);
-          return NextResponse.json({
-            type: 4,
-            data: { content: "❌ Internal error running /rsvp. Check server logs.", flags: 64 },
-          });
+          return replyEphemeral("❌ Internal error running /rsvp. Check server logs.");
         }
       }
 
-      // Unknown command: respond after ACK
-      await postToInteractionWebhook({ token, content: "Unknown command.", flags: 64 });
-      return ack;
+      return replyEphemeral("Unknown command.");
     }
 
     // 3) BUTTON CLICKS (INLINE on Vercel, return UPDATE_MESSAGE)
@@ -956,7 +567,6 @@ export async function POST(req: Request) {
           return NextResponse.json({ type: 6 });
         }
 
-        // 1) Save RSVP
         const { error: upErr } = await supabaseAdmin.from("session_rsvps").upsert(
           {
             session_id: sessionId,
@@ -972,7 +582,6 @@ export async function POST(req: Request) {
           return NextResponse.json({ type: 6 });
         }
 
-        // 2) Load session + RSVPs to rebuild embed
         const { data: session, error: sessionErr } = await supabaseAdmin
           .from("sessions")
           .select("title,start_local,duration_minutes,notes,guild_id")
@@ -1009,8 +618,92 @@ export async function POST(req: Request) {
 
         const guildId = String((session as any).guild_id || "");
         const allIds = Array.from(new Set([...inUsers, ...maybeUsers, ...outUsers]));
+
+        // We keep badge parts loading as-is, but safe fallback if no guild id
         const badgeParts = guildId
-          ? await loadUserBadgePartsForDiscordIds({ guildId, discordIds: allIds })
+          ? await (async () => {
+              // minimal inline copy of your badge loader behavior
+              const result = new Map<string, BadgeParts>();
+              for (const id of allIds) result.set(id, { combat: "❔", logistics: "❔" });
+
+              const { data: profs, error: profErr } = await supabaseAdmin
+                .from("profiles")
+                .select("id, discord_user_id")
+                .in("discord_user_id", allIds);
+
+              if (profErr) return result;
+
+              const discordToProfile = new Map<string, string>();
+              const profileIds: string[] = [];
+              for (const p of profs ?? []) {
+                const did = String((p as any).discord_user_id || "");
+                const pid = String((p as any).id || "");
+                if (!did || !pid) continue;
+                discordToProfile.set(did, pid);
+                profileIds.push(pid);
+              }
+
+              if (!profileIds.length) return result;
+
+              const { data: selections, error: selErr } = await supabaseAdmin
+                .from("user_hub_roles")
+                .select("user_id, role_kind, role_id")
+                .eq("guild_id", guildId)
+                .in("user_id", profileIds);
+
+              if (selErr) return result;
+
+              const perProfile = new Map<string, { combatRoleId: string | null; logisticsRoleId: string | null }>();
+              for (const row of selections ?? []) {
+                const pid = String((row as any).user_id || "");
+                const kind = String((row as any).role_kind || "");
+                const rid = String((row as any).role_id || "");
+                if (!pid || !rid) continue;
+                const cur = perProfile.get(pid) || { combatRoleId: null, logisticsRoleId: null };
+                if (kind === "combat") cur.combatRoleId = rid;
+                if (kind === "logistics") cur.logisticsRoleId = rid;
+                perProfile.set(pid, cur);
+              }
+
+              const roleIds = Array.from(
+                new Set(
+                  Array.from(perProfile.values())
+                    .flatMap((x) => [x.combatRoleId, x.logisticsRoleId])
+                    .filter(Boolean) as string[]
+                )
+              );
+
+              const roleIdToGroup = new Map<string, string>();
+              if (roleIds.length) {
+                const { data: meta } = await supabaseAdmin
+                  .from("guild_role_meta")
+                  .select("role_id, group_key")
+                  .eq("guild_id", guildId)
+                  .in("role_id", roleIds);
+
+                for (const m of meta ?? []) {
+                  const rid = String((m as any).role_id || "");
+                  const gk = String((m as any).group_key || "");
+                  if (rid) roleIdToGroup.set(rid, gk);
+                }
+              }
+
+              for (const [discordId, profileId] of discordToProfile.entries()) {
+                const sel = perProfile.get(profileId) || { combatRoleId: null, logisticsRoleId: null };
+                const combatGroup = sel.combatRoleId ? roleIdToGroup.get(sel.combatRoleId) : null;
+                const logiGroup = sel.logisticsRoleId ? roleIdToGroup.get(sel.logisticsRoleId) : null;
+
+                const combatIcon = combatGroup ? groupIcon(combatGroup) : "❔";
+                const logiIcon = logiGroup ? groupIcon(logiGroup) : "❔";
+
+                const safeCombat = combatIcon === "🛡" || combatIcon === "🧙" || combatIcon === "🏹" ? combatIcon : "❔";
+                const safeLogi = logiIcon || "❔";
+
+                result.set(discordId, { combat: safeCombat, logistics: safeLogi });
+              }
+
+              return result;
+            })()
           : new Map<string, BadgeParts>();
 
         const payload = buildSessionEmbedPayload({
@@ -1028,7 +721,6 @@ export async function POST(req: Request) {
 
         attachThumbnailToFirstEmbed(payload);
 
-        // 3) Update the message directly as the interaction response
         return NextResponse.json({
           type: 7,
           data: (payload as any)?.data ? (payload as any).data : payload,
