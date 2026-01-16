@@ -413,38 +413,68 @@ async function loadUserBadgePartsForDiscordIds(params: { guildId: string; discor
 // Discord HTTP helpers
 // =======================================================
 
+// Capture the correct application id for the current interaction.
+// This avoids 404 Unknown Webhook when env vars point at the wrong app.
+let _lastInteractionAppId = "";
+
 // IMPORTANT FIX:
 // When you ACK a slash command with type: 5 (DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE),
 // you must complete it by editing the ORIGINAL interaction response.
 // That is done via PATCH .../messages/@original.
-// This stops the "thinking" spinner.
+// Some deployments end up with a mismatched DISCORD_APPLICATION_ID.
+// We use body.application_id when available and fall back to env.
+// If editing fails, we fall back to a followup POST so users still get a response.
 async function postToInteractionWebhook(params: { token: string; content: string; flags?: number }) {
-  const appId = process.env.DISCORD_APPLICATION_ID;
+  const appId =
+    String(_lastInteractionAppId || "").trim() || String(process.env.DISCORD_APPLICATION_ID || "").trim();
+
   if (!appId) throw new Error("DISCORD_APPLICATION_ID missing");
 
   const token = String(params.token || "").trim();
   if (!token) throw new Error("Interaction token missing");
 
-  const url = `https://discord.com/api/v10/webhooks/${appId}/${token}/messages/@original`;
+  // 1) Try editing the deferred original response
+  {
+    const url = `https://discord.com/api/v10/webhooks/${appId}/${token}/messages/@original`;
 
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      content: params.content,
-      allowed_mentions: { parse: [] },
-      // NOTE: flags are set on the initial ACK; Discord does not need flags here.
-    }),
-  });
+    const res = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: params.content,
+        allowed_mentions: { parse: [] },
+      }),
+    });
 
-  const text = await res.text().catch(() => "");
+    const text = await res.text().catch(() => "");
 
-  if (!res.ok) {
+    if (res.ok) return text;
+
     console.error("Edit original interaction response failed", res.status, text);
-    throw new Error(`Edit original interaction response failed: HTTP ${res.status} ${text}`);
   }
 
-  return text;
+  // 2) Fallback: create a followup message (ephemeral via flags)
+  {
+    const url = `https://discord.com/api/v10/webhooks/${appId}/${token}?wait=true`;
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: params.content,
+        flags: params.flags ?? 64,
+        allowed_mentions: { parse: [] },
+      }),
+    });
+
+    const text = await res.text().catch(() => "");
+    if (!res.ok) {
+      console.error("Followup interaction message failed", res.status, text);
+      throw new Error(`Followup interaction message failed: HTTP ${res.status} ${text}`);
+    }
+
+    return text;
+  }
 }
 
 async function postChannelMessageAsBot(params: { channelId: string; payload: any }) {
@@ -606,6 +636,9 @@ export async function POST(req: Request) {
 
     // 2) SLASH COMMANDS
     if (body.type === 2) {
+      // Capture application id from the interaction (prevents Unknown Webhook)
+      _lastInteractionAppId = String((body as any)?.application_id || "").trim();
+
       // ACK immediately (Discord times out fast)
       const ack = NextResponse.json({ type: 5, data: { flags: 64 } });
 
