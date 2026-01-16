@@ -340,7 +340,7 @@ export default async function SetupPage(props: {
 
         <div style={{ display: "grid", gap: 14 }}>
           <StoneSection title="Read This First">
-            <P>Sign in with Discord on the exact domain you will use for the hub (production or localhost).</P>
+            <P>Sign in with Discord on the exact domain you will use for the hub.</P>
             <P>Mixing domains can break the login handshake and block officer checks.</P>
 
             <Note kind="warn">
