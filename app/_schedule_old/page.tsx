@@ -311,7 +311,7 @@ function minutesToLabel(mins: number) {
         <div style={{ fontWeight: 700, fontSize: 16 }}>{s.title}</div>
 
         <div style={{ marginTop: 6, opacity: 0.8 }}>
-          {formatWhen(String(s.startLocal || ""))} • {minutesToLabel(s.durationMinutes)}
+          {formatWhen(String(s.startLocal || ""))} • {minutesToLabel(s.durationMinutes ?? 0)}
         </div>
 
         {s.notes ? (
